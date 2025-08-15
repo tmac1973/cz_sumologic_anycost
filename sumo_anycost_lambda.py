@@ -55,7 +55,7 @@ try:
     METRICS_CREDIT_RATE = float(os.environ.get('METRICS_CREDIT_RATE', '10'))
     TRACING_CREDIT_RATE = float(os.environ.get('TRACING_CREDIT_RATE', '35'))
     COST_PER_CREDIT = float(os.environ.get('COST_PER_CREDIT', '0.15'))
-    QUERY_TIME_HOURS = float(os.environ.get('QUERY_TIME_HOURS, 1'))
+    QUERY_TIME_HOURS = float(os.environ.get('QUERY_TIME_HOURS', '1'))
     CZ_URL = os.environ.get('CZ_URL', 'https://api.cloudzero.com')
 except ValueError as e:
     logger.error(f'Missing environmental variable: {e}')
