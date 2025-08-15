@@ -55,6 +55,7 @@ try:
     METRICS_CREDIT_RATE = float(os.environ.get('METRICS_CREDIT_RATE', '10'))
     TRACING_CREDIT_RATE = float(os.environ.get('TRACING_CREDIT_RATE', '35'))
     COST_PER_CREDIT = float(os.environ.get('COST_PER_CREDIT', '0.15'))
+    QUERY_TIME_HOURS = float(os.environ.get('QUERY_TIME_HOURS, 1'))
     CZ_URL = os.environ.get('CZ_URL', 'https://api.cloudzero.com')
 except ValueError as e:
     logger.error(f'Missing environmental variable: {e}')
@@ -223,7 +224,7 @@ class SumoLogic:
 
     def get_billing_data(self, query:str, use_receipt_time=True):
 
-        default_start_datetime = datetime.now(timezone.utc) - timedelta(hours=1)
+        default_start_datetime = datetime.now(timezone.utc) - timedelta(hours=QUERY_TIME_HOURS)
         QUERY_START_DATETIME = default_start_datetime.strftime('%Y-%m-%dT%H:%M:%S')
         QUERY_END_DATETIME = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S')
         results = self.search_job_records_sync(query, QUERY_START_DATETIME, QUERY_END_DATETIME, by_receipt_time=use_receipt_time)
