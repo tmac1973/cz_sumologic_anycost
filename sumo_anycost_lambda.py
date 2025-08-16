@@ -384,7 +384,7 @@ class CloudZero:
         if len(data) > 0:
             try:
                 payload = {
-                    "operation": "replace_hourly",
+                    "operation": "replace_drop",
                     "data": data,
                     "month": data[0]["time/usage_start"],
                 }
