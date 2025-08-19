@@ -1,8 +1,25 @@
 [project]
 name = "cz-sumologic-adapter"
 version = "0.1.0"
-description = "Add your description here"
+description = "SumoLogic to CloudZero billing data adapter"
 requires-python = ">=3.10"
 dependencies = [
     "requests==2.32.4",
 ]
+
+
+[dependency-groups]
+dev = [
+    "poethepoet>=0.29.0",
+    "ruff>=0.1.0",
+]
+
+[tool.poe.tasks]
+run = "python sumo_anycost_lambda.py"
+test = "./test_execute.sh"
+test-with-creds = "./test.sh"
+type-check = "python -m py_compile sumo_anycost_lambda.py"
+lint = "ruff check sumo_anycost_lambda.py"
+format = "ruff format sumo_anycost_lambda.py"
+check = "ruff check --fix sumo_anycost_lambda.py"
+requirements = { shell = "uv export --no-hashes --no-dev > requirements.txt" }

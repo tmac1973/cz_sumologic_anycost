@@ -5,6 +5,7 @@ import time
 from datetime import datetime, timedelta, timezone
 import logging
 from functools import wraps
+from typing import Dict, List, Optional, Any, Union
 try:
     import cookielib
 except ImportError:
@@ -59,6 +60,7 @@ try:
     CZ_URL = os.environ.get('CZ_URL', 'https://api.cloudzero.com')
 except ValueError as e:
     logger.error(f'Missing environmental variable: {e}')
+    raise SystemExit(1)
 
 
 
@@ -68,7 +70,7 @@ CONTINUOUS_LOG_INGESTED = '_index=sumologic_volume _sourceCategory = "sourcecate
 FREQUENT_LOG_INGESTED = '_index=sumologic_volume _sourceCategory = "sourcecategory_and_tier_volume"| parse regex "(?<data>\\{[^\\{]+\\})" multi | json field=data "field","dataTier","sizeInBytes","count" as sourcecategory, dataTier, bytes, count |where dataTier matches "Frequent" | where !(sourcecategory matches "*_volume") | bytes/1Gi as gbytes | timeslice 1h | sum(gbytes) as gbytes by _timeslice, sourceCategory, dataTier | gbytes*' + str(LOG_FREQUENT_CREDIT_RATE) + ' as credits '
 INFREQUENT_LOG_INGESTED = '_index=sumologic_volume _sourceCategory = "sourcecategory_and_tier_volume"| parse regex "(?<data>\\{[^\\{]+\\})" multi | json field=data "field","dataTier","sizeInBytes","count" as sourcecategory, dataTier, bytes, count |where dataTier matches "Infrequent" | where !(sourcecategory matches "*_volume") | bytes/1Gi as gbytes | timeslice 1h | sum(gbytes) as gbytes by _timeslice, sourceCategory, dataTier | gbytes*' + str(LOG_INFREQUENT_CREDIT_RATE) + ' as credits '
 INFREQUENT_LOG_SCANNED = '_view=sumologic_search_usage_per_query  !(user_name=*sumologic.com) !(status_message="Query Failed") | json field=scanned_bytes_breakdown "Infrequent" as data_scanned_bytes | analytics_tier as datatier |fields data_scanned_bytes, query, is_aggregate, query_type, status_message, user_name, datatier| if (query_type == "View Maintenance", "Scheduled Views", query_type) as query_type| data_scanned_bytes / 1Gi as gbytes| timeslice 1h|sum (gbytes) as gbytes by _timeslice, user_name| fillmissing timeslice (1h) | gbytes * ' + str(LOG_INFREQUENT_SCAN_CREDIT_RATE) + ' as credits'
-TRACES_INGESTED = '_index=sumologic_volume _sourceCategory="sourcecategory_tracing_volume"| parse regex "\\"(?<sourcecategory>[^\\"]+)\\"\\:(?<data>\\{[^\\}]*\\})" multi| json field=data "billedBytes","spansCount" as bytes, spans| bytes/1Gi as gbytes  | timeslice 1h | sum(gbytes) as gbytes, sum(spans) as spans by _timeslice, sourcecategory, datatier| gbytes*' + str(TRACING_CREDIT_RATE) + ' as credits '
+TRACES_INGESTED = '_index=sumologic_volume _sourceCategory="sourcecategory_tracing_volume"| parse regex "\\"(?<sourcecategory>[^\\"]+)\\"\\:(?<data>\\{[^\\}]*\\})" multi| json field=data "billedBytes","spansCount" as bytes, spans| bytes/1Gi as gbytes  | timeslice 1h | sum(gbytes) as gbytes, sum(spans) as spans by _timeslice, sourcecategory| gbytes*' + str(TRACING_CREDIT_RATE) + ' as credits '
 METRICS_INGESTED = '_index=sumologic_volume _sourceCategory="sourcecategory_metrics_volume"| parse regex "\\"(?<sourcecategory>[^\\"]+)\\"\\:(?<data>\\{[^\\}]*\\})" multi| json field=data "dataPoints"| timeslice 1h | sum(datapoints) as datapoints by _timeslice, sourcecategory| datapoints /1000 *' + str(METRICS_CREDIT_RATE) + ' as credits'
 
 # API RATE Limit constants
@@ -100,6 +102,7 @@ def backoff(func):
         raise lastException
     return limited
 
+
 class SumoLogic:
 
     # number of records to return
@@ -115,7 +118,7 @@ class SumoLogic:
         cj = cookielib.FileCookieJar(cookieFile)
         self.session.cookies = cj
 
-    def endpoint_lookup(self, deployment:str ):
+    def endpoint_lookup(self, deployment: str) -> str:
         # there are duplicates here because most deployments have 2 names
         endpoints = {'prod': 'https://api.sumologic.com/api',
                      'us1': 'https://api.sumologic.com/api',
@@ -133,13 +136,16 @@ class SumoLogic:
                      'kr': 'https://api.kr.sumologic.com/api',
                      'fed': 'https://api.fed.sumologic.com/api',
                      }
-        return endpoints[str(deployment).lower()]
+        deployment_key = str(deployment).lower()
+        if deployment_key not in endpoints:
+            raise ValueError(f"Unsupported SumoLogic deployment: {deployment}. Supported deployments: {', '.join(endpoints.keys())}")
+        return endpoints[deployment_key]
 
-    def get_versioned_endpoint(self, version:str):
+    def get_versioned_endpoint(self, version: str) -> str:
         return f'{self.endpoint}/{version}'
 
     @backoff
-    def get(self, method:str, params:dict=None, version:str=None):
+    def get(self, method: str, params: Optional[Dict[str, Any]] = None, version: Optional[str] = None) -> requests.Response:
         version = version or self.DEFAULT_VERSION
         endpoint = self.get_versioned_endpoint(version)
         r = self.session.get(endpoint + method, params=params)
@@ -149,7 +155,7 @@ class SumoLogic:
         return r
 
     @backoff
-    def post(self, method:str, params:dict, headers:dict=None, version:str=None):
+    def post(self, method: str, params: Dict[str, Any], headers: Optional[Dict[str, str]] = None, version: Optional[str] = None) -> requests.Response:
         version = version or self.DEFAULT_VERSION
         endpoint = self.get_versioned_endpoint(version)
         r = self.session.post(endpoint + method, data=json.dumps(params), headers=headers)
@@ -158,26 +164,26 @@ class SumoLogic:
         r.raise_for_status()
         return r
 
-    def search_job(self, query:str, from_time:str=None, to_time:str=None, time_zone:str= 'UTC', by_receipt_time:bool=False):
+    def search_job(self, query: str, from_time: Optional[str] = None, to_time: Optional[str] = None, time_zone: str = 'UTC', by_receipt_time: bool = False) -> Dict[str, Any]:
         params = {'query': query, 'from': from_time, 'to': to_time, 'timeZone': time_zone, 'byReceiptTime': by_receipt_time, 'autoParsingMode': 'AutoParse'}
         r = self.post('/search/jobs', params)
         return json.loads(r.text)
 
-    def search_job_status(self, search_job:dict):
+    def search_job_status(self, search_job: Dict[str, Any]) -> Dict[str, Any]:
         r = self.get('/search/jobs/' + str(search_job['id']))
         return json.loads(r.text)
 
-    def search_job_messages(self, search_job:dict, limit:int=None, offset:int=0):
+    def search_job_messages(self, search_job: Dict[str, Any], limit: Optional[int] = None, offset: int = 0) -> Dict[str, Any]:
         params = {'limit': limit, 'offset': offset}
         r = self.get('/search/jobs/' + str(search_job['id']) + '/messages', params)
         return json.loads(r.text)
 
-    def search_job_records(self, search_job:dict, limit:int=None, offset:int=0):
+    def search_job_records(self, search_job: Dict[str, Any], limit: Optional[int] = None, offset: int = 0) -> Dict[str, Any]:
         params = {'limit': limit, 'offset': offset}
         r = self.get('/search/jobs/' + str(search_job['id']) + '/records', params)
         return json.loads(r.text)
 
-    def search_job_records_sync(self, query:str, from_time:str=None, to_time:str=None, time_zone:str=None, by_receipt_time:bool=False):
+    def search_job_records_sync(self, query: str, from_time: Optional[str] = None, to_time: Optional[str] = None, time_zone: Optional[str] = None, by_receipt_time: bool = False) -> Union[List[Dict[str, Any]], Dict[str, Any]]:
         searchjob = self.search_job(query, from_time=from_time, to_time=to_time, time_zone=time_zone, by_receipt_time=by_receipt_time)
         status = self.search_job_status(searchjob)
         numrecords = status['recordCount']
@@ -200,7 +206,7 @@ class SumoLogic:
         else:
             return status
 
-    def search_job_messages_sync(self, query:str, from_time:str=None, to_time:str=None, time_zone:str=None, by_receipt_time:bool=False):
+    def search_job_messages_sync(self, query: str, from_time: Optional[str] = None, to_time: Optional[str] = None, time_zone: Optional[str] = None, by_receipt_time: bool = False) -> Union[List[Dict[str, Any]], Dict[str, Any]]:
         searchjob = self.search_job(query, from_time=from_time, to_time=to_time, time_zone=time_zone, by_receipt_time=by_receipt_time)
         status = self.search_job_status(searchjob)
         nummessages = status['messageCount']
@@ -222,7 +228,7 @@ class SumoLogic:
         else:
             return status
 
-    def get_billing_data(self, query:str, use_receipt_time=True):
+    def get_billing_data(self, query: str, use_receipt_time: bool = True) -> Union[List[Dict[str, Any]], Dict[str, Any]]:
 
         default_start_datetime = datetime.now(timezone.utc) - timedelta(hours=QUERY_TIME_HOURS)
         QUERY_START_DATETIME = default_start_datetime.strftime('%Y-%m-%dT%H:%M:%S')
@@ -230,7 +236,7 @@ class SumoLogic:
         results = self.search_job_records_sync(query, QUERY_START_DATETIME, QUERY_END_DATETIME, by_receipt_time=use_receipt_time)
         return results
 
-    def convert_logs_to_cbf(self, records:list):
+    def convert_logs_to_cbf(self, records: List[Dict[str, Any]]) -> List[Dict[str, str]]:
 
         results = []
         for record in records:
@@ -239,7 +245,7 @@ class SumoLogic:
                 logger.debug(record_map)
                 results.append({
                     'time/usage_start': datetime.fromtimestamp(float(record_map['_timeslice']) / 1000).replace(tzinfo=timezone.utc).isoformat(),
-                    'resource/id': f"czrn:sumologic:logs-{record_map['datatier'].lower()}-ingest:{SUMO_DEPLOYMENT.lower()}:{SUMO_ORG_ID.lower()}:sourcecategory:{record_map['sourcecategory'].lower()}",
+                    'resource/id': f"czrn:sumologic:logs-{record_map['datatier'].lower()}-ingest:{SUMO_DEPLOYMENT.lower()}:{SUMO_ORG_ID.lower()}:sourcecategory:{record_map['sourcecategory'].lower().replace('/', '-')}",
                     'resource/usage_family': record_map['datatier'].lower(),
                     'lineitem/type': "Usage",
                     'lineitem/description': f"{record_map['datatier']} logs ingested by Source Category",
@@ -255,7 +261,7 @@ class SumoLogic:
                 logger.warning(f"Skipping record: {e}")
         return results
 
-    def convert_logs_scanned_to_cbf(self, records:list):
+    def convert_logs_scanned_to_cbf(self, records: List[Dict[str, Any]]) -> List[Dict[str, str]]:
 
         results = []
         for record in records:
@@ -264,11 +270,11 @@ class SumoLogic:
                 logger.debug(record_map)
                 results.append({
                     'time/usage_start': datetime.fromtimestamp(float(record_map['_timeslice']) / 1000).replace(tzinfo=timezone.utc).isoformat(),
-                    'resource/id': f"czrn:sumologic:logs-{record_map['datatier'].lower()}-scan:{SUMO_DEPLOYMENT.lower()}:{SUMO_ORG_ID.lower()}:username:{record_map['user_name'].lower()}",
-                    'resource/usage_family': record_map['datatier'].lower(),
+                    'resource/id': f"czrn:sumologic:logs-infrequent-scan:{SUMO_DEPLOYMENT.lower()}:{SUMO_ORG_ID.lower()}:username:{record_map['user_name'].lower()}",
+                    'resource/usage_family': 'infrequent',
                     'lineitem/type': "Usage",
-                    'lineitem/description': f"{record_map['datatier']} logs scanned by user",
-                    'resource/service': f"Logs - {record_map['datatier'].lower()}",
+                    'lineitem/description': "Infrequent logs scanned by user",
+                    'resource/service': "Logs - infrequent",
                     'resource/account': SUMO_ORG_ID,
                     'resource/region': SUMO_DEPLOYMENT,
                     'usage/units': "credits",
@@ -280,7 +286,7 @@ class SumoLogic:
                 logger.warning(f"Skipping record: {e}")
         return results
 
-    def convert_traces_to_cbf(self, records:list):
+    def convert_traces_to_cbf(self, records: List[Dict[str, Any]]) -> List[Dict[str, str]]:
 
         results = []
         for record in records:
@@ -289,10 +295,10 @@ class SumoLogic:
                 logger.debug(record_map)
                 results.append({
                     'time/usage_start': datetime.fromtimestamp(float(record_map['_timeslice']) / 1000).replace(tzinfo=timezone.utc).isoformat(),
-                    'resource/id': f"czrn:sumologic:traces-ingest:{SUMO_DEPLOYMENT.lower()}:{SUMO_ORG_ID.lower()}:sourcecategory:{record_map['sourcecategory'].lower()}",
+                    'resource/id': f"czrn:sumologic:traces-ingest:{SUMO_DEPLOYMENT.lower()}:{SUMO_ORG_ID.lower()}:sourcecategory:{record_map['sourcecategory'].lower().replace('/', '-')}",
                     'resource/usage_family': 'traces',
                     'lineitem/type': "Usage",
-                    'lineitem/description': f"tracing spans ingested by Source Category",
+                    'lineitem/description': "tracing spans ingested by Source Category",
                     'resource/service': "traces",
                     'resource/account': SUMO_ORG_ID,
                     'resource/region': SUMO_DEPLOYMENT,
@@ -305,7 +311,7 @@ class SumoLogic:
                 logger.warning(f"Skipping record: {e}")
         return results
 
-    def convert_metrics_to_cbf(self, records:list):
+    def convert_metrics_to_cbf(self, records: List[Dict[str, Any]]) -> List[Dict[str, str]]:
 
         results = []
         for record in records:
@@ -314,10 +320,10 @@ class SumoLogic:
                 logger.debug(record_map)
                 results.append({
                     'time/usage_start': datetime.fromtimestamp(float(record_map['_timeslice']) / 1000).replace(tzinfo=timezone.utc).isoformat(),
-                    'resource/id': f"czrn:sumologic:metrics-ingest:{SUMO_DEPLOYMENT.lower()}:{SUMO_ORG_ID.lower()}:sourcecategory:{record_map['sourcecategory'].lower()}",
+                    'resource/id': f"czrn:sumologic:metrics-ingest:{SUMO_DEPLOYMENT.lower()}:{SUMO_ORG_ID.lower()}:sourcecategory:{record_map['sourcecategory'].lower().replace('/', '-')}",
                     'resource/usage_family': 'metrics',
                     'lineitem/type': "Usage",
-                    'lineitem/description': f"metrics datapoints ingested by Source Category",
+                    'lineitem/description': "metrics datapoints ingested by Source Category",
                     'resource/service': "metrics",
                     'resource/account': SUMO_ORG_ID,
                     'resource/region': SUMO_DEPLOYMENT,
@@ -330,27 +336,27 @@ class SumoLogic:
                 logger.warning(f"Skipping record: {e}")
         return results
 
-    def get_continuous_logs_cbf(self):
+    def get_continuous_logs_cbf(self) -> List[Dict[str, str]]:
         results = self.get_billing_data(CONTINUOUS_LOG_INGESTED)
         return self.convert_logs_to_cbf(results)
 
-    def get_frequent_logs_cbf(self):
+    def get_frequent_logs_cbf(self) -> List[Dict[str, str]]:
         results = self.get_billing_data(FREQUENT_LOG_INGESTED)
         return self.convert_logs_to_cbf(results)
 
-    def get_infrequent_logs_cbf(self):
+    def get_infrequent_logs_cbf(self) -> List[Dict[str, str]]:
         results = self.get_billing_data(INFREQUENT_LOG_INGESTED)
         return self.convert_logs_to_cbf(results)
 
-    def get_infrequent_logs_scanned_cbf(self):
+    def get_infrequent_logs_scanned_cbf(self) -> List[Dict[str, str]]:
         results = self.get_billing_data(INFREQUENT_LOG_SCANNED, use_receipt_time=False)
         return self.convert_logs_scanned_to_cbf(results)
 
-    def get_metrics_cbf(self):
+    def get_metrics_cbf(self) -> List[Dict[str, str]]:
         results = self.get_billing_data(METRICS_INGESTED)
         return self.convert_metrics_to_cbf(results)
 
-    def get_traces_cbf(self):
+    def get_traces_cbf(self) -> List[Dict[str, str]]:
         results = self.get_billing_data(TRACES_INGESTED)
         logger.debug(results)
         return self.convert_traces_to_cbf(results)
@@ -358,7 +364,7 @@ class SumoLogic:
 
 class CloudZero:
 
-    def __init__(self, auth_key:str, endpoint:str, stream_id:str):
+    def __init__(self, auth_key: str, endpoint: str, stream_id: str) -> None:
         self.session = requests.Session()
         self.session.headers = {'content-type': 'application/json',
                                 'accept': 'application/json',
@@ -366,21 +372,21 @@ class CloudZero:
         self.endpoint = endpoint
         self.stream_id = stream_id
 
-    def get(self, method:str, params:dict=None):
+    def get(self, method: str, params: Optional[Dict[str, Any]] = None) -> requests.Response:
         r = self.session.get(self.endpoint + method, params=params)
         if 400 <= r.status_code < 600:
             r.reason = r.text
         r.raise_for_status()
         return r
 
-    def post(self, method:str, data:dict, headers:dict=None):
+    def post(self, method: str, data: Dict[str, Any], headers: Optional[Dict[str, str]] = None) -> requests.Response:
         r = self.session.post(self.endpoint + method, data=json.dumps(data), headers=headers)
         if 400 <= r.status_code < 600:
             r.reason = r.text
         r.raise_for_status()
         return r
 
-    def post_anycost_stream(self, data:list):
+    def post_anycost_stream(self, data: List[Dict[str, str]]) -> Union[Dict[str, Any], str]:
         if len(data) > 0:
             try:
                 payload = {
@@ -395,7 +401,7 @@ class CloudZero:
         else:
             return('No anycost data to post')
 
-def lambda_handler(event:dict, context:dict):
+def lambda_handler(event: Dict[str, Any], context: Dict[str, Any]) -> None:
     logger.info("=== Starting Lambda Handler ===")
     sumo = SumoLogic(SUMO_ACCESS_KEY, SUMO_SECRET_KEY, SUMO_DEPLOYMENT)
     logger.info('Getting SumoLogic continuous log ingest cost from SumoLogic API')
@@ -439,7 +445,7 @@ def lambda_handler(event:dict, context:dict):
 
     logger.info("=== Lambda Handler Completed ===")
 
-def main():
+def main() -> None:
     lambda_handler({}, {})
 
 if __name__ == "__main__":
