@@ -52,11 +52,11 @@ try:
     LOG_CONTINUOUS_CREDIT_RATE = float(os.environ.get('LOG_CONTINUOUS_CREDIT_RATE', '25'))
     LOG_FREQUENT_CREDIT_RATE = float(os.environ.get('LOG_FREQUENT_CREDIT_RATE', '12'))
     LOG_INFREQUENT_CREDIT_RATE = float(os.environ.get('LOG_INFREQUENT_CREDIT_RATE', '5'))
-    LOG_INFREQUENT_SCAN_CREDIT_RATE = float(os.environ.get('LOG_INFREQUENT_SCAN_CREDIT_RATE', '0.16'))
+    LOG_INFREQUENT_SCAN_CREDIT_RATE = float(os.environ.get('LOG_INFREQUENT_SCAN_CREDIT_RATE', '2'))
     METRICS_CREDIT_RATE = float(os.environ.get('METRICS_CREDIT_RATE', '10'))
     TRACING_CREDIT_RATE = float(os.environ.get('TRACING_CREDIT_RATE', '35'))
     COST_PER_CREDIT = float(os.environ.get('COST_PER_CREDIT', '0.15'))
-    QUERY_TIME_HOURS = float(os.environ.get('QUERY_TIME_HOURS', '1'))
+    QUERY_TIME_HOURS = float(os.environ.get('QUERY_TIME_HOURS', '24'))
     CZ_URL = os.environ.get('CZ_URL', 'https://api.cloudzero.com')
 except ValueError as e:
     logger.error(f'Missing environmental variable: {e}')
@@ -71,8 +71,8 @@ FREQUENT_LOG_INGESTED = '_index=sumologic_volume _sourceCategory = "sourcecatego
 INFREQUENT_LOG_INGESTED = '_index=sumologic_volume _sourceCategory = "sourcecategory_and_tier_volume"| parse regex "(?<data>\\{[^\\{]+\\})" multi | json field=data "field","dataTier","sizeInBytes","count" as sourcecategory, dataTier, bytes, count |where dataTier matches "Infrequent" | where !(sourcecategory matches "*_volume") | bytes/1Gi as gbytes | timeslice 1h | sum(gbytes) as gbytes by _timeslice, sourceCategory, dataTier | gbytes*' + str(LOG_INFREQUENT_CREDIT_RATE) + ' as credits '
 INFREQUENT_LOG_SCANNED = '_view=sumologic_search_usage_per_query  !(user_name=*sumologic.com) !(status_message="Query Failed") | json field=scanned_bytes_breakdown "Infrequent" as data_scanned_bytes | analytics_tier as datatier |fields data_scanned_bytes, query, is_aggregate, query_type, status_message, user_name, datatier| if (query_type == "View Maintenance", "Scheduled Views", query_type) as query_type| data_scanned_bytes / 1Gi as gbytes| timeslice 1h|sum (gbytes) as gbytes by _timeslice, user_name| fillmissing timeslice (1h) | gbytes * ' + str(LOG_INFREQUENT_SCAN_CREDIT_RATE) + ' as credits'
 TRACES_INGESTED = '_index=sumologic_volume _sourceCategory="sourcecategory_tracing_volume"| parse regex "\\"(?<sourcecategory>[^\\"]+)\\"\\:(?<data>\\{[^\\}]*\\})" multi| json field=data "billedBytes","spansCount" as bytes, spans| bytes/1Gi as gbytes  | timeslice 1h | sum(gbytes) as gbytes, sum(spans) as spans by _timeslice, sourcecategory| gbytes*' + str(TRACING_CREDIT_RATE) + ' as credits '
-METRICS_INGESTED = '_index=sumologic_volume _sourceCategory="sourcecategory_metrics_volume"| parse regex "\\"(?<sourcecategory>[^\\"]+)\\"\\:(?<data>\\{[^\\}]*\\})" multi| json field=data "dataPoints"| timeslice 1h | sum(datapoints) as datapoints by _timeslice, sourcecategory| datapoints /1000 *' + str(METRICS_CREDIT_RATE) + ' as credits'
-
+#METRICS_INGESTED = '_index=sumologic_volume _sourceCategory="sourcecategory_metrics_volume"| parse regex "\\"(?<sourcecategory>[^\\"]+)\\"\\:(?<data>\\{[^\\}]*\\})" multi| json field=data "dataPoints"| timeslice 1h | sum(datapoints) as datapoints by _timeslice, sourcecategory| datapoints /1000 *' + str(METRICS_CREDIT_RATE) + ' as credits'
+METRICS_INGESTED = '_index=sumologic_volume _sourceCategory="sourcecategory_metrics_volume" datapoints| parse regex "\\"(?<sourcecategory>[^\\"]+)\\"\\:\\{\\"dataPoints\\"\\:(?<datapoints>\\d+)\\}" multi| timeslice 24h | sum(datapoints) as datapoints by sourcecategory, _timeslice| ((queryEndTime() - queryStartTime())/(1000*60)) as duration_in_min| datapoints / duration_in_min as %"DPM" | DPM/1000 as AvgKDPM | AvgKDPM *' + str(METRICS_CREDIT_RATE) + ' as credits '
 # API RATE Limit constants
 MAX_TRIES = 10
 NUMBER_OF_CALLS = 4
@@ -244,7 +244,7 @@ class SumoLogic:
                 record_map = record['map']
                 logger.debug(record_map)
                 results.append({
-                    'time/usage_start': datetime.fromtimestamp(float(record_map['_timeslice']) / 1000).replace(tzinfo=timezone.utc).isoformat(),
+                    'time/usage_start': datetime.fromtimestamp(float(record_map['_timeslice'].strip()) / 1000).replace(tzinfo=timezone.utc).isoformat(),
                     'resource/id': f"czrn:sumologic:logs-{record_map['datatier'].lower()}-ingest:{SUMO_DEPLOYMENT.lower()}:{SUMO_ORG_ID.lower()}:sourcecategory:{record_map['sourcecategory'].lower().replace('/', '-')}",
                     'resource/usage_family': record_map['datatier'].lower(),
                     'lineitem/type': "Usage",
@@ -254,8 +254,8 @@ class SumoLogic:
                     'resource/region': SUMO_DEPLOYMENT,
                     'usage/units': "credits",
                     'action/operation': "ingest",
-                    'usage/amount': f"{float(record_map['credits']):6f}",
-                    'cost/cost': f"{(float(record_map['credits']) * COST_PER_CREDIT):6f}",
+                    'usage/amount': f"{float(record_map['credits'].strip()):6f}",
+                    'cost/cost': f"{(float(record_map['credits'].strip()) * COST_PER_CREDIT):6f}",
                 })
             except(KeyError, Exception) as e:
                 logger.warning(f"Skipping record: {e}")
@@ -269,7 +269,7 @@ class SumoLogic:
                 record_map = record['map']
                 logger.debug(record_map)
                 results.append({
-                    'time/usage_start': datetime.fromtimestamp(float(record_map['_timeslice']) / 1000).replace(tzinfo=timezone.utc).isoformat(),
+                    'time/usage_start': datetime.fromtimestamp(float(record_map['_timeslice'].strip()) / 1000).replace(tzinfo=timezone.utc).isoformat(),
                     'resource/id': f"czrn:sumologic:logs-infrequent-scan:{SUMO_DEPLOYMENT.lower()}:{SUMO_ORG_ID.lower()}:username:{record_map['user_name'].lower()}",
                     'resource/usage_family': 'infrequent',
                     'lineitem/type': "Usage",
@@ -279,8 +279,8 @@ class SumoLogic:
                     'resource/region': SUMO_DEPLOYMENT,
                     'usage/units': "credits",
                     'action/operation': "scan",
-                    'usage/amount': f"{float(record_map['credits']):6f}",
-                    'cost/cost': f"{(float(record_map['credits']) * COST_PER_CREDIT):6f}",
+                    'usage/amount': f"{float(record_map['credits'].strip()):6f}",
+                    'cost/cost': f"{(float(record_map['credits'].strip()) * COST_PER_CREDIT):6f}",
                 })
             except(KeyError, Exception) as e:
                 logger.warning(f"Skipping record: {e}")
@@ -294,7 +294,7 @@ class SumoLogic:
                 record_map = record['map']
                 logger.debug(record_map)
                 results.append({
-                    'time/usage_start': datetime.fromtimestamp(float(record_map['_timeslice']) / 1000).replace(tzinfo=timezone.utc).isoformat(),
+                    'time/usage_start': datetime.fromtimestamp(float(record_map['_timeslice'].strip()) / 1000).replace(tzinfo=timezone.utc).isoformat(),
                     'resource/id': f"czrn:sumologic:traces-ingest:{SUMO_DEPLOYMENT.lower()}:{SUMO_ORG_ID.lower()}:sourcecategory:{record_map['sourcecategory'].lower().replace('/', '-')}",
                     'resource/usage_family': 'traces',
                     'lineitem/type': "Usage",
@@ -304,8 +304,8 @@ class SumoLogic:
                     'resource/region': SUMO_DEPLOYMENT,
                     'usage/units': "credits",
                     'action/operation': "ingest",
-                    'usage/amount': f"{float(record_map['credits']):6f}",
-                    'cost/cost': f"{(float(record_map['credits']) * COST_PER_CREDIT):6f}",
+                    'usage/amount': f"{float(record_map['credits'].strip()):6f}",
+                    'cost/cost': f"{(float(record_map['credits'].strip()) * COST_PER_CREDIT):6f}",
                 })
             except(KeyError, Exception) as e:
                 logger.warning(f"Skipping record: {e}")
@@ -319,18 +319,18 @@ class SumoLogic:
                 record_map = record['map']
                 logger.debug(record_map)
                 results.append({
-                    'time/usage_start': datetime.fromtimestamp(float(record_map['_timeslice']) / 1000).replace(tzinfo=timezone.utc).isoformat(),
+                    'time/usage_start': datetime.fromtimestamp(float(record_map['_timeslice'].strip()) / 1000).replace(tzinfo=timezone.utc).isoformat(),
                     'resource/id': f"czrn:sumologic:metrics-ingest:{SUMO_DEPLOYMENT.lower()}:{SUMO_ORG_ID.lower()}:sourcecategory:{record_map['sourcecategory'].lower().replace('/', '-')}",
                     'resource/usage_family': 'metrics',
                     'lineitem/type': "Usage",
-                    'lineitem/description': "metrics datapoints ingested by Source Category",
+                    'lineitem/description': "daily average 1k datapoints ingested by Source Category",
                     'resource/service': "metrics",
                     'resource/account': SUMO_ORG_ID,
                     'resource/region': SUMO_DEPLOYMENT,
                     'usage/units': "credits",
                     'action/operation': "ingest",
-                    'usage/amount': f"{float(record_map['credits']):6f}",
-                    'cost/cost': f"{(float(record_map['credits']) * COST_PER_CREDIT):6f}",
+                    'usage/amount': f"{float(record_map['credits'].strip()):6f}",
+                    'cost/cost': f"{(float(record_map['credits'].strip()) * COST_PER_CREDIT):6f}",
                 })
             except(KeyError, Exception) as e:
                 logger.warning(f"Skipping record: {e}")

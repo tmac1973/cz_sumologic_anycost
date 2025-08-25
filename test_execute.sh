@@ -21,9 +21,6 @@ export CZ_AUTH_KEY="<set this>"
 # As of 08/2025 CZ only has the one API endpoint but this may change in the future. If so you can override here
 #export CZ_URL='https://api.cloudzero.com'
 
-# This script will default to querying the last hour of data for each run. You can increase that time window here
-# If you make it too large though you may generate too much data for the CZ API to ingest in a single go
-#export QUERY_TIME_HOURS="1"
 
 # change this to "DEBUG" for more info in logs
 export LOGGING_LEVEL="INFO"
