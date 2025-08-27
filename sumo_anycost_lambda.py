@@ -5,11 +5,13 @@ import time
 from datetime import datetime, timedelta, timezone
 import logging
 from functools import wraps
+from enum import Enum
 from typing import Dict, List, Optional, Any, Union
 try:
     import cookielib
 except ImportError:
     import http.cookiejar as cookielib
+
 
 LOGGING_LEVEL_STRING = os.environ.get('LOGGING_LEVEL', "INFO")
 match LOGGING_LEVEL_STRING:
@@ -362,6 +364,11 @@ class SumoLogic:
         return self.convert_traces_to_cbf(results)
 
 
+class CZAnycostOp(Enum):
+    REPLACE_HOURLY = 1
+    REPLACE_DROP = 2
+    SUM = 3
+
 class CloudZero:
 
     def __init__(self, auth_key: str, endpoint: str, stream_id: str) -> None:
@@ -386,11 +393,20 @@ class CloudZero:
         r.raise_for_status()
         return r
 
-    def post_anycost_stream(self, data: List[Dict[str, str]]) -> Union[Dict[str, Any], str]:
+    def post_anycost_stream(self, data: List[Dict[str, str]], operation: CZAnycostOp) -> Union[Dict[str, Any], str]:
         if len(data) > 0:
+            match operation:
+                case CZAnycostOp.REPLACE_HOURLY:
+                    opstring = "replace_hourly"
+                case CZAnycostOp.REPLACE_DROP:
+                    opstring = "replace_drop"
+                case CZAnycostOp.SUM:
+                    opstring = "sum"
+                case _:
+                    raise Exception("No CZ operation specified.")
             try:
                 payload = {
-                    "operation": "replace_hourly",
+                    "operation": opstring,
                     "data": data,
                     "month": data[0]["time/usage_start"],
                 }
@@ -425,22 +441,22 @@ def lambda_handler(event: Dict[str, Any], context: Dict[str, Any]) -> None:
 
     cz = CloudZero(CZ_AUTH_KEY, CZ_URL, CZ_ANYCOST_STREAM_CONNECTION_ID)
     logger.info('Posting SumoLogic continuous log ingest cost to CloudZero')
-    results = cz.post_anycost_stream(continuous)
+    results = cz.post_anycost_stream(continuous, CZAnycostOp.REPLACE_HOURLY)
     logger.info(results)
     logger.info('Posting SumoLogic frequent log ingest cost to CloudZero')
-    results = cz.post_anycost_stream(frequent)
+    results = cz.post_anycost_stream(frequent, CZAnycostOp.SUM)
     logger.info(results)
     logger.info('Posting SumoLogic infrequent log ingest cost to CloudZero')
-    results = cz.post_anycost_stream(infrequent)
+    results = cz.post_anycost_stream(infrequent, CZAnycostOp.SUM)
     logger.info(results)
     logger.info('Posting SumoLogic infrequent log scan cost to CloudZero')
-    results = cz.post_anycost_stream(infrequent_scanned)
+    results = cz.post_anycost_stream(infrequent_scanned, CZAnycostOp.SUM)
     logger.info(results)
     logger.info('Posting SumoLogic metrics ingest cost to CloudZero')
-    results = cz.post_anycost_stream(metrics)
+    results = cz.post_anycost_stream(metrics, CZAnycostOp.SUM)
     logger.info(results)
     logger.info('Posting SumoLogic traces ingest cost to CloudZero')
-    results = cz.post_anycost_stream(traces)
+    results = cz.post_anycost_stream(traces, CZAnycostOp.SUM)
     logger.info(results)
 
     logger.info("=== Lambda Handler Completed ===")
