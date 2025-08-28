@@ -38,7 +38,7 @@ Data is converted to CloudZero Billing Format (CBF) and streamed to CloudZero us
 
 **Other Options:**
 - `CZ_URL`: CloudZero API endpoint (default: "https://api.cloudzero.com")
-- `QUERY_TIME_HOURS`: Hours of historical data to query (default: 1)
+- `QUERY_TIME_HOURS`: Hours of historical data to query (default: 24, should not be changed)
 - `LOGGING_LEVEL`: Log level - "INFO" or "DEBUG" (default: "INFO")
 
 ## Local Development
@@ -123,18 +123,20 @@ aws lambda create-function \
 
 ### Scheduling
 
-Set up EventBridge to run hourly:
+**IMPORTANT:** This script must be run exactly once every 24 hours. Running it at any other frequency will cause incorrect data reporting.
+
+Set up EventBridge to run daily:
 ```bash
 aws events put-rule \
-  --name sumo-cz-adapter-hourly \
-  --schedule-expression "rate(1 hour)"
+  --name sumo-cz-adapter-daily \
+  --schedule-expression "rate(24 hours)"
 
 aws lambda add-permission \
   --function-name sumo-cz-adapter \
   --statement-id allow-eventbridge \
   --action lambda:InvokeFunction \
   --principal events.amazonaws.com \
-  --source-arn arn:aws:events:us-east-1:YOUR-ACCOUNT:rule/sumo-cz-adapter-hourly
+  --source-arn arn:aws:events:us-east-1:YOUR-ACCOUNT:rule/sumo-cz-adapter-daily
 ```
 
 ## Azure Functions Deployment
@@ -175,7 +177,7 @@ from sumo_anycost_lambda import lambda_handler
 
 app = func.FunctionApp()
 
-@app.schedule(schedule="0 0 * * * *", arg_name="myTimer", run_on_startup=False)
+@app.schedule(schedule="0 0 0 * * *", arg_name="myTimer", run_on_startup=False)
 def timer_trigger(myTimer: func.TimerRequest) -> None:
     if myTimer.past_due:
         logging.info('The timer is past due!')
@@ -260,7 +262,7 @@ def sumo_cz_sync(cloud_event):
 
 3. **Deploy function:**
 ```bash
-# Deploy with Cloud Scheduler trigger (hourly)
+# Deploy with Cloud Scheduler trigger (daily)
 gcloud functions deploy sumo-cz-adapter \
   --gen2 \
   --runtime python310 \
@@ -283,9 +285,9 @@ gcloud functions deploy sumo-cz-adapter \
 # Create topic for scheduling
 gcloud pubsub topics create sumo-cz-trigger
 
-# Create hourly scheduled job
-gcloud scheduler jobs create pubsub sumo-cz-hourly \
-  --schedule="0 * * * *" \
+# Create daily scheduled job (IMPORTANT: Must run exactly once every 24 hours)
+gcloud scheduler jobs create pubsub sumo-cz-daily \
+  --schedule="0 0 * * *" \
   --topic=sumo-cz-trigger \
   --message-body="{}"
 ```
