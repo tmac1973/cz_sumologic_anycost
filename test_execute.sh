@@ -9,13 +9,13 @@ export CZ_AUTH_KEY="<set this>"
 
 # You SHOULD set these variables according to your Sumologic contract
 # otherwise they will use default values which may not be correct
-# values here are the defaults.
-#export LOG_CONTINUOUS_CREDIT_RATE="25"
-#export LOG_FREQUENT_CREDIT_RATE="12"
-#export LOG_INFREQUENT_CREDIT_RATE="5"
+# values here are speculative.
+#export LOG_CONTINUOUS_CREDIT_RATE="20"
+#export LOG_FREQUENT_CREDIT_RATE="9"
+#export LOG_INFREQUENT_CREDIT_RATE="0.4"
 #export LOG_INFREQUENT_SCAN_CREDIT_RATE="0.16"
-#export METRICS_CREDIT_RATE="10"
-#export TRACING_CREDIT_RATE="35"
+#export METRICS_CREDIT_RATE="3"
+#export TRACING_CREDIT_RATE="14"
 #export COST_PER_CREDIT="0.15"
 
 # As of 08/2025 CZ only has the one API endpoint but this may change in the future. If so you can override here

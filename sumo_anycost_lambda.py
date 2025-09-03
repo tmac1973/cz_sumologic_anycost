@@ -51,12 +51,12 @@ try:
     CZ_ANYCOST_STREAM_CONNECTION_ID = os.environ.get('CZ_ANYCOST_STREAM_CONNECTION_ID', None)
     if CZ_ANYCOST_STREAM_CONNECTION_ID is None:
         raise ValueError("CZ_ANYCOST_STREAM_CONNECTION_ID not set!")
-    LOG_CONTINUOUS_CREDIT_RATE = float(os.environ.get('LOG_CONTINUOUS_CREDIT_RATE', '25'))
-    LOG_FREQUENT_CREDIT_RATE = float(os.environ.get('LOG_FREQUENT_CREDIT_RATE', '12'))
-    LOG_INFREQUENT_CREDIT_RATE = float(os.environ.get('LOG_INFREQUENT_CREDIT_RATE', '5'))
-    LOG_INFREQUENT_SCAN_CREDIT_RATE = float(os.environ.get('LOG_INFREQUENT_SCAN_CREDIT_RATE', '2'))
-    METRICS_CREDIT_RATE = float(os.environ.get('METRICS_CREDIT_RATE', '10'))
-    TRACING_CREDIT_RATE = float(os.environ.get('TRACING_CREDIT_RATE', '35'))
+    LOG_CONTINUOUS_CREDIT_RATE = float(os.environ.get('LOG_CONTINUOUS_CREDIT_RATE', '20'))
+    LOG_FREQUENT_CREDIT_RATE = float(os.environ.get('LOG_FREQUENT_CREDIT_RATE', '9'))
+    LOG_INFREQUENT_CREDIT_RATE = float(os.environ.get('LOG_INFREQUENT_CREDIT_RATE', '0.4'))
+    LOG_INFREQUENT_SCAN_CREDIT_RATE = float(os.environ.get('LOG_INFREQUENT_SCAN_CREDIT_RATE', '0.016'))
+    METRICS_CREDIT_RATE = float(os.environ.get('METRICS_CREDIT_RATE', '3'))
+    TRACING_CREDIT_RATE = float(os.environ.get('TRACING_CREDIT_RATE', '14'))
     COST_PER_CREDIT = float(os.environ.get('COST_PER_CREDIT', '0.15'))
     QUERY_TIME_HOURS = float(os.environ.get('QUERY_TIME_HOURS', '24'))
     CZ_URL = os.environ.get('CZ_URL', 'https://api.cloudzero.com')
@@ -230,6 +230,16 @@ class SumoLogic:
         else:
             return status
 
+    def export_credits_usage_report(self, from_time: Optional[str] = None, to_time: Optional[str] = None, group_by:str = "day", report_type:str = "detailed", include_deployment_charge: bool = False) -> str:
+        body = {'startDate': from_time,
+                'endDate': to_time,
+                'groupBy': group_by,
+                'reportType': report_type,
+                'includeDeploymentCharge': include_deployment_charge
+                }
+        r = self.post('/account/usage/report', body)
+        return json.loads(r.text)
+
     def get_billing_data(self, query: str, use_receipt_time: bool = True) -> Union[List[Dict[str, Any]], Dict[str, Any]]:
 
         default_start_datetime = datetime.now(timezone.utc) - timedelta(hours=QUERY_TIME_HOURS)
@@ -247,11 +257,11 @@ class SumoLogic:
                 logger.debug(record_map)
                 results.append({
                     'time/usage_start': datetime.fromtimestamp(float(record_map['_timeslice'].strip()) / 1000).replace(tzinfo=timezone.utc).isoformat(),
-                    'resource/id': f"czrn:sumologic:logs-{record_map['datatier'].lower()}-ingest:{SUMO_DEPLOYMENT.lower()}:{SUMO_ORG_ID.lower()}:sourcecategory:{record_map['sourcecategory'].lower().replace('/', '-')}",
-                    'resource/usage_family': record_map['datatier'].lower(),
+                    'resource/id': f"sourcecategory/{record_map['sourcecategory'].lower().replace('/', '|')}",
+                    'resource/usage_family': record_map['datatier'],
                     'lineitem/type': "Usage",
                     'lineitem/description': f"{record_map['datatier']} logs ingested by Source Category",
-                    'resource/service': f"Logs - {record_map['datatier'].lower()}",
+                    'resource/service': f"Logs {record_map['datatier'].lower()} Ingest",
                     'resource/account': SUMO_ORG_ID,
                     'resource/region': SUMO_DEPLOYMENT,
                     'usage/units': "credits",
@@ -272,11 +282,11 @@ class SumoLogic:
                 logger.debug(record_map)
                 results.append({
                     'time/usage_start': datetime.fromtimestamp(float(record_map['_timeslice'].strip()) / 1000).replace(tzinfo=timezone.utc).isoformat(),
-                    'resource/id': f"czrn:sumologic:logs-infrequent-scan:{SUMO_DEPLOYMENT.lower()}:{SUMO_ORG_ID.lower()}:username:{record_map['user_name'].lower()}",
+                    'resource/id': f"username/{record_map['user_name'].lower()}",
                     'resource/usage_family': 'infrequent',
                     'lineitem/type': "Usage",
                     'lineitem/description': "Infrequent logs scanned by user",
-                    'resource/service': "Logs - infrequent",
+                    'resource/service': "Logs Infrequent Scan",
                     'resource/account': SUMO_ORG_ID,
                     'resource/region': SUMO_DEPLOYMENT,
                     'usage/units': "credits",
@@ -297,11 +307,11 @@ class SumoLogic:
                 logger.debug(record_map)
                 results.append({
                     'time/usage_start': datetime.fromtimestamp(float(record_map['_timeslice'].strip()) / 1000).replace(tzinfo=timezone.utc).isoformat(),
-                    'resource/id': f"czrn:sumologic:traces-ingest:{SUMO_DEPLOYMENT.lower()}:{SUMO_ORG_ID.lower()}:sourcecategory:{record_map['sourcecategory'].lower().replace('/', '-')}",
+                    'resource/id': f"sourcecategory/{record_map['sourcecategory'].lower().replace('/', '|')}",
                     'resource/usage_family': 'traces',
                     'lineitem/type': "Usage",
                     'lineitem/description': "tracing spans ingested by Source Category",
-                    'resource/service': "traces",
+                    'resource/service': "Traces Ingest",
                     'resource/account': SUMO_ORG_ID,
                     'resource/region': SUMO_DEPLOYMENT,
                     'usage/units': "credits",
@@ -322,11 +332,11 @@ class SumoLogic:
                 logger.debug(record_map)
                 results.append({
                     'time/usage_start': datetime.fromtimestamp(float(record_map['_timeslice'].strip()) / 1000).replace(tzinfo=timezone.utc).isoformat(),
-                    'resource/id': f"czrn:sumologic:metrics-ingest:{SUMO_DEPLOYMENT.lower()}:{SUMO_ORG_ID.lower()}:sourcecategory:{record_map['sourcecategory'].lower().replace('/', '-')}",
+                    'resource/id': f"sourcecategory/{record_map['sourcecategory'].lower().replace('/', '|')}",
                     'resource/usage_family': 'metrics',
                     'lineitem/type': "Usage",
                     'lineitem/description': "daily average 1k datapoints ingested by Source Category",
-                    'resource/service': "metrics",
+                    'resource/service': "Metrics Ingest",
                     'resource/account': SUMO_ORG_ID,
                     'resource/region': SUMO_DEPLOYMENT,
                     'usage/units': "credits",
@@ -420,44 +430,45 @@ class CloudZero:
 def lambda_handler(event: Dict[str, Any], context: Dict[str, Any]) -> None:
     logger.info("=== Starting Lambda Handler ===")
     sumo = SumoLogic(SUMO_ACCESS_KEY, SUMO_SECRET_KEY, SUMO_DEPLOYMENT)
-    logger.info('Getting SumoLogic continuous log ingest cost from SumoLogic API')
-    continuous = sumo.get_continuous_logs_cbf()
-    logger.debug(json.dumps(continuous, indent=4))
-    logger.info('Getting SumoLogic frequent log ingest cost from SumoLogic API')
-    frequent = sumo.get_frequent_logs_cbf()
-    logger.debug(json.dumps(frequent, indent=4))
-    logger.info('Getting SumoLogic infrequent log ingest cost from SumoLogic API')
-    infrequent = sumo.get_infrequent_logs_cbf()
-    logger.debug(json.dumps(infrequent,indent=4))
-    logger.info('Getting SumoLogic infrequent log scan cost from SumoLogic API')
-    infrequent_scanned = sumo.get_infrequent_logs_scanned_cbf()
-    logger.debug(json.dumps(infrequent_scanned, indent=4))
-    logger.info('Getting SumoLogic metrics ingest cost from SumoLogic API')
-    metrics = sumo.get_metrics_cbf()
-    logger.debug(json.dumps(metrics, indent=4))
-    logger.info('Getting SumoLogic traces ingest cost from SumoLogic API')
-    traces = sumo.get_traces_cbf()
-    logger.debug(json.dumps(traces, indent=4))
-
-    cz = CloudZero(CZ_AUTH_KEY, CZ_URL, CZ_ANYCOST_STREAM_CONNECTION_ID)
-    logger.info('Posting SumoLogic continuous log ingest cost to CloudZero')
-    results = cz.post_anycost_stream(continuous, CZAnycostOp.REPLACE_HOURLY)
-    logger.info(results)
-    logger.info('Posting SumoLogic frequent log ingest cost to CloudZero')
-    results = cz.post_anycost_stream(frequent, CZAnycostOp.SUM)
-    logger.info(results)
-    logger.info('Posting SumoLogic infrequent log ingest cost to CloudZero')
-    results = cz.post_anycost_stream(infrequent, CZAnycostOp.SUM)
-    logger.info(results)
-    logger.info('Posting SumoLogic infrequent log scan cost to CloudZero')
-    results = cz.post_anycost_stream(infrequent_scanned, CZAnycostOp.SUM)
-    logger.info(results)
-    logger.info('Posting SumoLogic metrics ingest cost to CloudZero')
-    results = cz.post_anycost_stream(metrics, CZAnycostOp.SUM)
-    logger.info(results)
-    logger.info('Posting SumoLogic traces ingest cost to CloudZero')
-    results = cz.post_anycost_stream(traces, CZAnycostOp.SUM)
-    logger.info(results)
+    print(sumo.export_credits_usage_report())
+    # logger.info('Getting SumoLogic continuous log ingest cost from SumoLogic API')
+    # continuous = sumo.get_continuous_logs_cbf()
+    # logger.debug(json.dumps(continuous, indent=4))
+    # logger.info('Getting SumoLogic frequent log ingest cost from SumoLogic API')
+    # frequent = sumo.get_frequent_logs_cbf()
+    # logger.debug(json.dumps(frequent, indent=4))
+    # logger.info('Getting SumoLogic infrequent log ingest cost from SumoLogic API')
+    # infrequent = sumo.get_infrequent_logs_cbf()
+    # logger.debug(json.dumps(infrequent,indent=4))
+    # logger.info('Getting SumoLogic infrequent log scan cost from SumoLogic API')
+    # infrequent_scanned = sumo.get_infrequent_logs_scanned_cbf()
+    # logger.debug(json.dumps(infrequent_scanned, indent=4))
+    # logger.info('Getting SumoLogic metrics ingest cost from SumoLogic API')
+    # metrics = sumo.get_metrics_cbf()
+    # logger.debug(json.dumps(metrics, indent=4))
+    # logger.info('Getting SumoLogic traces ingest cost from SumoLogic API')
+    # traces = sumo.get_traces_cbf()
+    # logger.debug(json.dumps(traces, indent=4))
+    #
+    # cz = CloudZero(CZ_AUTH_KEY, CZ_URL, CZ_ANYCOST_STREAM_CONNECTION_ID)
+    # logger.info('Posting SumoLogic continuous log ingest cost to CloudZero')
+    # results = cz.post_anycost_stream(continuous, CZAnycostOp.REPLACE_HOURLY)
+    # logger.info(results)
+    # logger.info('Posting SumoLogic frequent log ingest cost to CloudZero')
+    # results = cz.post_anycost_stream(frequent, CZAnycostOp.SUM)
+    # logger.info(results)
+    # logger.info('Posting SumoLogic infrequent log ingest cost to CloudZero')
+    # results = cz.post_anycost_stream(infrequent, CZAnycostOp.SUM)
+    # logger.info(results)
+    # logger.info('Posting SumoLogic infrequent log scan cost to CloudZero')
+    # results = cz.post_anycost_stream(infrequent_scanned, CZAnycostOp.SUM)
+    # logger.info(results)
+    # logger.info('Posting SumoLogic metrics ingest cost to CloudZero')
+    # results = cz.post_anycost_stream(metrics, CZAnycostOp.SUM)
+    # logger.info(results)
+    # logger.info('Posting SumoLogic traces ingest cost to CloudZero')
+    # results = cz.post_anycost_stream(traces, CZAnycostOp.SUM)
+    # logger.info(results)
 
     logger.info("=== Lambda Handler Completed ===")
 
