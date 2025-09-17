@@ -251,8 +251,8 @@ class SumoLogic:
                                     group_by: str = "day", report_type: str = "detailed",
                                     include_deployment_charge: bool = False) -> str:
         logger.debug(f"Exporting usage report with dates: {str(from_time)}, {str(to_time)}")
-        body = {'startDate': str(from_time),
-                'endDate': str(to_time),
+        body = {'startDate': from_time,
+                'endDate': to_time,
                 'groupBy': group_by,
                 'reportType': report_type,
                 'includeDeploymentCharge': include_deployment_charge
@@ -415,15 +415,20 @@ class SumoLogic:
                 "resource/id": "infrequent log storage",
                 "resource/usage_family": "logs",
                 "lineitem/description": "infrequent log storage",
-                "resource/service": "Logs Storage",
+                "resource/service": "Infrequent Logs Storage",
                 "action/operation": "ingest",
             },
         }
         for _, row in df.iterrows():
             for metric, meta in metric_mappings.items():
                 amount = row[metric]
-                dt = datetime.strptime(row['Date'],"%m/%d/%y")
-                iso_date = dt.date().isoformat()
+                # Handle both string dates and date objects
+                if isinstance(row['Date'], str):
+                    dt = datetime.strptime(row['Date'],"%m/%d/%y")
+                    iso_date = dt.date().isoformat()
+                else:
+                    # Already a date object
+                    iso_date = row['Date'].isoformat()
 
                 results.append({
                     "time/usage_start": str(iso_date),
@@ -436,7 +441,7 @@ class SumoLogic:
                     "resource/region": SUMO_DEPLOYMENT,
                     "usage/units": "credits",
                     "action/operation": meta["action/operation"],
-                    "usage/amount": amount,
+                    "usage/amount": str(amount),
                     "cost/cost": f"{float(amount) * COST_PER_CREDIT:.6f}",
                 })
 
@@ -460,7 +465,17 @@ class SumoLogic:
 
     def get_logs_storage_cbf(self) -> List[Dict[str, str]]:
         df = self.get_billing_data_api()
-        return (self.convert_storage_to_cbf(df))
+
+        # Filter to only include the previous day (last 24 hours) in UTC
+        previous_day = (datetime.now(timezone.utc) - timedelta(days=1)).date()
+
+        # Convert Date column to datetime for filtering (handle multiple date formats)
+        df['Date'] = pd.to_datetime(df['Date'], format='mixed').dt.date
+
+        # Filter to only include records from the previous day
+        df_filtered = df[df['Date'] == previous_day]
+
+        return self.convert_storage_to_cbf(df_filtered)
 
     def get_metrics_cbf(self) -> List[Dict[str, str]]:
         results = self.get_billing_data(METRICS_INGESTED)
@@ -530,51 +545,50 @@ class CloudZero:
 def lambda_handler(event: Dict[str, Any], context: Dict[str, Any]) -> None:
     logger.info("=== Starting Lambda Handler ===")
     sumo = SumoLogic(SUMO_ACCESS_KEY, SUMO_SECRET_KEY, SUMO_DEPLOYMENT)
-    response = sumo.get_logs_storage_cbf()
-    print(response)
+    logger.info('Getting SumoLogic continuous log ingest cost from SumoLogic API')
+    continuous = sumo.get_continuous_logs_cbf()
+    logger.debug(json.dumps(continuous, indent=4))
+    logger.info('Getting SumoLogic frequent log ingest cost from SumoLogic API')
+    frequent = sumo.get_frequent_logs_cbf()
+    logger.debug(json.dumps(frequent, indent=4))
+    logger.info('Getting SumoLogic infrequent log ingest cost from SumoLogic API')
+    infrequent = sumo.get_infrequent_logs_cbf()
+    logger.debug(json.dumps(infrequent,indent=4))
+    logger.info('Getting SumoLogic infrequent log scan cost from SumoLogic API')
+    infrequent_scanned = sumo.get_infrequent_logs_scanned_cbf()
+    logger.debug(json.dumps(infrequent_scanned, indent=4))
+    logger.info('Getting SumoLogic metrics ingest cost from SumoLogic API')
+    metrics = sumo.get_metrics_cbf()
+    logger.debug(json.dumps(metrics, indent=4))
+    logger.info('Getting SumoLogic traces ingest cost from SumoLogic API')
+    traces = sumo.get_traces_cbf()
+    logger.debug(json.dumps(traces, indent=4))
+    logger.info('Getting SumoLogic log storage cost from SumoLogic API')
+    storage = sumo.get_logs_storage_cbf()
+    logger.debug(json.dumps(storage, indent=4))
 
-
-
-
-    # logger.info('Getting SumoLogic continuous log ingest cost from SumoLogic API')
-    # continuous = sumo.get_continuous_logs_cbf()
-    # logger.debug(json.dumps(continuous, indent=4))
-    # logger.info('Getting SumoLogic frequent log ingest cost from SumoLogic API')
-    # frequent = sumo.get_frequent_logs_cbf()
-    # logger.debug(json.dumps(frequent, indent=4))
-    # logger.info('Getting SumoLogic infrequent log ingest cost from SumoLogic API')
-    # infrequent = sumo.get_infrequent_logs_cbf()
-    # logger.debug(json.dumps(infrequent,indent=4))
-    # logger.info('Getting SumoLogic infrequent log scan cost from SumoLogic API')
-    # infrequent_scanned = sumo.get_infrequent_logs_scanned_cbf()
-    # logger.debug(json.dumps(infrequent_scanned, indent=4))
-    # logger.info('Getting SumoLogic metrics ingest cost from SumoLogic API')
-    # metrics = sumo.get_metrics_cbf()
-    # logger.debug(json.dumps(metrics, indent=4))
-    # logger.info('Getting SumoLogic traces ingest cost from SumoLogic API')
-    # traces = sumo.get_traces_cbf()
-    # logger.debug(json.dumps(traces, indent=4))
-    #
-    # cz = CloudZero(CZ_AUTH_KEY, CZ_URL, CZ_ANYCOST_STREAM_CONNECTION_ID)
-    # logger.info('Posting SumoLogic continuous log ingest cost to CloudZero')
-    # results = cz.post_anycost_stream(continuous, CZAnycostOp.REPLACE_HOURLY)
-    # logger.info(results)
-    # logger.info('Posting SumoLogic frequent log ingest cost to CloudZero')
-    # results = cz.post_anycost_stream(frequent, CZAnycostOp.SUM)
-    # logger.info(results)
-    # logger.info('Posting SumoLogic infrequent log ingest cost to CloudZero')
-    # results = cz.post_anycost_stream(infrequent, CZAnycostOp.SUM)
-    # logger.info(results)
-    # logger.info('Posting SumoLogic infrequent log scan cost to CloudZero')
-    # results = cz.post_anycost_stream(infrequent_scanned, CZAnycostOp.SUM)
-    # logger.info(results)
-    # logger.info('Posting SumoLogic metrics ingest cost to CloudZero')
-    # results = cz.post_anycost_stream(metrics, CZAnycostOp.SUM)
-    # logger.info(results)
-    # logger.info('Posting SumoLogic traces ingest cost to CloudZero')
-    # results = cz.post_anycost_stream(traces, CZAnycostOp.SUM)
-    # logger.info(results)
-
+    cz = CloudZero(CZ_AUTH_KEY, CZ_URL, CZ_ANYCOST_STREAM_CONNECTION_ID)
+    logger.info('Posting SumoLogic continuous log ingest cost to CloudZero')
+    results = cz.post_anycost_stream(continuous, CZAnycostOp.REPLACE_HOURLY)
+    logger.info(results)
+    logger.info('Posting SumoLogic frequent log ingest cost to CloudZero')
+    results = cz.post_anycost_stream(frequent, CZAnycostOp.SUM)
+    logger.info(results)
+    logger.info('Posting SumoLogic infrequent log ingest cost to CloudZero')
+    results = cz.post_anycost_stream(infrequent, CZAnycostOp.SUM)
+    logger.info(results)
+    logger.info('Posting SumoLogic infrequent log scan cost to CloudZero')
+    results = cz.post_anycost_stream(infrequent_scanned, CZAnycostOp.SUM)
+    logger.info(results)
+    logger.info('Posting SumoLogic metrics ingest cost to CloudZero')
+    results = cz.post_anycost_stream(metrics, CZAnycostOp.SUM)
+    logger.info(results)
+    logger.info('Posting SumoLogic traces ingest cost to CloudZero')
+    results = cz.post_anycost_stream(traces, CZAnycostOp.SUM)
+    logger.info(results)
+    logger.info('Posting SumoLogic log storage ingest cost to CloudZero')
+    results = cz.post_anycost_stream(storage, CZAnycostOp.SUM)
+    logger.info(results)
     logger.info("=== Lambda Handler Completed ===")
 
 
