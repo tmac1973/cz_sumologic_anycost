@@ -7,8 +7,8 @@ import logging
 from functools import wraps
 from enum import Enum
 from typing import Dict, List, Optional, Any, Union
-import pandas as pd
 import io
+import csv
 try:
     import cookielib
 except ImportError:
@@ -290,11 +290,12 @@ class SumoLogic:
                                                by_receipt_time=use_receipt_time)
         return results
 
-    def get_billing_data_api(self, ) -> pd.DataFrame:
+    def get_billing_data_api(self) -> List[Dict[str, str]]:
 
         results = self.export_usage_report_sync()
-        df = pd.read_csv(io.StringIO(results.text))
-        return df
+        # Parse CSV without pandas
+        csv_reader = csv.DictReader(io.StringIO(results.text))
+        return list(csv_reader)
 
     def convert_logs_to_cbf(self, records: List[Dict[str, Any]]) -> List[Dict[str, str]]:
 
@@ -400,7 +401,7 @@ class SumoLogic:
                 logger.warning(f"Skipping record: {e}")
         return results
 
-    def convert_storage_to_cbf(self, df:pd.DataFrame) -> List[Dict[str, str]]:
+    def convert_storage_to_cbf(self, data: List[Dict[str, str]]) -> List[Dict[str, str]]:
         results = []
 
         metric_mappings = {
@@ -419,16 +420,26 @@ class SumoLogic:
                 "action/operation": "ingest",
             },
         }
-        for _, row in df.iterrows():
+        for row in data:
             for metric, meta in metric_mappings.items():
                 amount = row[metric]
-                # Handle both string dates and date objects
-                if isinstance(row['Date'], str):
-                    dt = datetime.strptime(row['Date'],"%m/%d/%y")
-                    iso_date = dt.date().isoformat()
-                else:
-                    # Already a date object
-                    iso_date = row['Date'].isoformat()
+                # Parse date string to datetime - try multiple formats
+                dt = None
+                date_str = row['Date']
+
+                # Try different date formats
+                for fmt in ["%Y-%m-%d", "%m/%d/%y"]:
+                    try:
+                        dt = datetime.strptime(date_str, fmt)
+                        break
+                    except ValueError:
+                        continue
+
+                if dt is None:
+                    logger.warning(f"Could not parse date in convert_storage_to_cbf: {date_str}")
+                    continue
+
+                iso_date = dt.date().isoformat()
 
                 results.append({
                     "time/usage_start": str(iso_date),
@@ -464,18 +475,37 @@ class SumoLogic:
         return self.convert_logs_scanned_to_cbf(results)
 
     def get_logs_storage_cbf(self) -> List[Dict[str, str]]:
-        df = self.get_billing_data_api()
+        data = self.get_billing_data_api()
 
         # Filter to only include the previous day (last 24 hours) in UTC
         previous_day = (datetime.now(timezone.utc) - timedelta(days=1)).date()
 
-        # Convert Date column to datetime for filtering (handle multiple date formats)
-        df['Date'] = pd.to_datetime(df['Date'], format='mixed').dt.date
+        # Filter data to only include records from the previous day
+        filtered_data = []
+        for row in data:
+            try:
+                # Parse date - try multiple formats
+                row_date = None
+                date_str = row['Date']
 
-        # Filter to only include records from the previous day
-        df_filtered = df[df['Date'] == previous_day]
+                # Try MM/dd/yy format first
+                try:
+                    row_date = datetime.strptime(date_str, "%m/%d/%y").date()
+                except ValueError:
+                    # Try YYYY-MM-DD format
+                    try:
+                        row_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+                    except ValueError:
+                        logger.warning(f"Could not parse date: {date_str}")
+                        continue
 
-        return self.convert_storage_to_cbf(df_filtered)
+                if row_date == previous_day:
+                    filtered_data.append(row)
+            except Exception as e:
+                logger.warning(f"Error processing row: {e}")
+                continue
+
+        return self.convert_storage_to_cbf(filtered_data)
 
     def get_metrics_cbf(self) -> List[Dict[str, str]]:
         results = self.get_billing_data(METRICS_INGESTED)

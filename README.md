@@ -29,6 +29,9 @@ Data is converted to CloudZero Billing Format (CBF) and streamed to the CloudZer
 
 ### Optional Variables
 
+For best results lookup your credit rates and cost per credit from your SumoLogic contract and set them using
+these env variables. The defaults are not guaranteed to be correct for your contract. 
+
 **Credit Rates (defaults shown):**
 - `LOG_CONTINUOUS_CREDIT_RATE`: 20
 - `LOG_FREQUENT_CREDIT_RATE`: 9
@@ -106,9 +109,10 @@ Edit test_execute.sh with your actual credentials
 
 This creates `sumo-anycost-lambda.zip` (optimized for Lambda) containing:
 - All dependencies from `requirements.txt` with Linux compatibility
-- Main Lambda function code
+- Main Lambda function code (renamed to `lambda_function.py`)
 - Size-optimized (removes unnecessary files)
 - Validates size limits
+
 
 2. **Deploy with AWS CLI:**
 ```bash
@@ -117,9 +121,9 @@ aws lambda create-function \
   --function-name sumo-cz-adapter \
   --runtime python3.13 \
   --role arn:aws:iam::YOUR-ACCOUNT:role/lambda-execution-role \
-  --handler sumo_anycost_lambda.lambda_handler \
+  --handler lambda_function.lambda_handler \
   --zip-file fileb://sumo-anycost-lambda.zip \
-  --timeout 300
+  --timeout 900
 
 # Set environment variables
 aws lambda update-function-configuration \
@@ -134,6 +138,9 @@ aws lambda update-function-configuration \
   }'
 ```
 
+Note: You can also deploy the zip file through the AWS Lambda UI. Don't forget to set the environmental variables 
+(see test_execute.sh for all available variables.) It is recommended to set your AWS Lambda function timeout to
+15 minutes (900 seconds) as this script can take a while to complete. 
 
 ### Method 2: Using Container Image
 
