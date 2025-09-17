@@ -7,11 +7,12 @@ import logging
 from functools import wraps
 from enum import Enum
 from typing import Dict, List, Optional, Any, Union
+import pandas as pd
+import io
 try:
     import cookielib
 except ImportError:
     import http.cookiejar as cookielib
-
 
 LOGGING_LEVEL_STRING = os.environ.get('LOGGING_LEVEL', "INFO")
 match LOGGING_LEVEL_STRING:
@@ -29,7 +30,6 @@ if len(logging.getLogger().handlers) > 0:
     logging.getLogger().setLevel(LOGGING_LEVEL)
 else:
     logging.basicConfig(level=LOGGING_LEVEL)
-
 
 # Grab Customer Specific data from ENV variables
 try:
@@ -64,17 +64,20 @@ except ValueError as e:
     logger.error(f'Missing environmental variable: {e}')
     raise SystemExit(1)
 
-
-
-
 # SumoLogic Queries
-CONTINUOUS_LOG_INGESTED = '_index=sumologic_volume _sourceCategory = "sourcecategory_and_tier_volume"| parse regex "(?<data>\\{[^\\{]+\\})" multi | json field=data "field","dataTier","sizeInBytes","count" as sourcecategory, dataTier, bytes, count |where dataTier matches "Continuous" | where !(sourcecategory matches "*_volume") | bytes/1Gi as gbytes | timeslice 1h | sum(gbytes) as gbytes by _timeslice, sourceCategory, dataTier | gbytes*' + str(LOG_CONTINUOUS_CREDIT_RATE) + ' as credits '
-FREQUENT_LOG_INGESTED = '_index=sumologic_volume _sourceCategory = "sourcecategory_and_tier_volume"| parse regex "(?<data>\\{[^\\{]+\\})" multi | json field=data "field","dataTier","sizeInBytes","count" as sourcecategory, dataTier, bytes, count |where dataTier matches "Frequent" | where !(sourcecategory matches "*_volume") | bytes/1Gi as gbytes | timeslice 1h | sum(gbytes) as gbytes by _timeslice, sourceCategory, dataTier | gbytes*' + str(LOG_FREQUENT_CREDIT_RATE) + ' as credits '
-INFREQUENT_LOG_INGESTED = '_index=sumologic_volume _sourceCategory = "sourcecategory_and_tier_volume"| parse regex "(?<data>\\{[^\\{]+\\})" multi | json field=data "field","dataTier","sizeInBytes","count" as sourcecategory, dataTier, bytes, count |where dataTier matches "Infrequent" | where !(sourcecategory matches "*_volume") | bytes/1Gi as gbytes | timeslice 1h | sum(gbytes) as gbytes by _timeslice, sourceCategory, dataTier | gbytes*' + str(LOG_INFREQUENT_CREDIT_RATE) + ' as credits '
-INFREQUENT_LOG_SCANNED = '_view=sumologic_search_usage_per_query  !(user_name=*sumologic.com) !(status_message="Query Failed") | json field=scanned_bytes_breakdown "Infrequent" as data_scanned_bytes | analytics_tier as datatier |fields data_scanned_bytes, query, is_aggregate, query_type, status_message, user_name, datatier| if (query_type == "View Maintenance", "Scheduled Views", query_type) as query_type| data_scanned_bytes / 1Gi as gbytes| timeslice 1h|sum (gbytes) as gbytes by _timeslice, user_name| fillmissing timeslice (1h) | gbytes * ' + str(LOG_INFREQUENT_SCAN_CREDIT_RATE) + ' as credits'
-TRACES_INGESTED = '_index=sumologic_volume _sourceCategory="sourcecategory_tracing_volume"| parse regex "\\"(?<sourcecategory>[^\\"]+)\\"\\:(?<data>\\{[^\\}]*\\})" multi| json field=data "billedBytes","spansCount" as bytes, spans| bytes/1Gi as gbytes  | timeslice 1h | sum(gbytes) as gbytes, sum(spans) as spans by _timeslice, sourcecategory| gbytes*' + str(TRACING_CREDIT_RATE) + ' as credits '
-#METRICS_INGESTED = '_index=sumologic_volume _sourceCategory="sourcecategory_metrics_volume"| parse regex "\\"(?<sourcecategory>[^\\"]+)\\"\\:(?<data>\\{[^\\}]*\\})" multi| json field=data "dataPoints"| timeslice 1h | sum(datapoints) as datapoints by _timeslice, sourcecategory| datapoints /1000 *' + str(METRICS_CREDIT_RATE) + ' as credits'
-METRICS_INGESTED = '_index=sumologic_volume _sourceCategory="sourcecategory_metrics_volume" datapoints| parse regex "\\"(?<sourcecategory>[^\\"]+)\\"\\:\\{\\"dataPoints\\"\\:(?<datapoints>\\d+)\\}" multi| timeslice 24h | sum(datapoints) as datapoints by sourcecategory, _timeslice| ((queryEndTime() - queryStartTime())/(1000*60)) as duration_in_min| datapoints / duration_in_min as %"DPM" | DPM/1000 as AvgKDPM | AvgKDPM *' + str(METRICS_CREDIT_RATE) + ' as credits '
+CONTINUOUS_LOG_INGESTED = '_index=sumologic_volume _sourceCategory = "sourcecategory_and_tier_volume"| parse regex "(?<data>\\{[^\\{]+\\})" multi | json field=data "field","dataTier","sizeInBytes","count" as sourcecategory, dataTier, bytes, count |where dataTier matches "Continuous" | where !(sourcecategory matches "*_volume") | bytes/1Gi as gbytes | timeslice 1h | sum(gbytes) as gbytes by _timeslice, sourceCategory, dataTier | gbytes*' + str(
+    LOG_CONTINUOUS_CREDIT_RATE) + ' as credits '
+FREQUENT_LOG_INGESTED = '_index=sumologic_volume _sourceCategory = "sourcecategory_and_tier_volume"| parse regex "(?<data>\\{[^\\{]+\\})" multi | json field=data "field","dataTier","sizeInBytes","count" as sourcecategory, dataTier, bytes, count |where dataTier matches "Frequent" | where !(sourcecategory matches "*_volume") | bytes/1Gi as gbytes | timeslice 1h | sum(gbytes) as gbytes by _timeslice, sourceCategory, dataTier | gbytes*' + str(
+    LOG_FREQUENT_CREDIT_RATE) + ' as credits '
+INFREQUENT_LOG_INGESTED = '_index=sumologic_volume _sourceCategory = "sourcecategory_and_tier_volume"| parse regex "(?<data>\\{[^\\{]+\\})" multi | json field=data "field","dataTier","sizeInBytes","count" as sourcecategory, dataTier, bytes, count |where dataTier matches "Infrequent" | where !(sourcecategory matches "*_volume") | bytes/1Gi as gbytes | timeslice 1h | sum(gbytes) as gbytes by _timeslice, sourceCategory, dataTier | gbytes*' + str(
+    LOG_INFREQUENT_CREDIT_RATE) + ' as credits '
+INFREQUENT_LOG_SCANNED = '_view=sumologic_search_usage_per_query  !(user_name=*sumologic.com) !(status_message="Query Failed") | json field=scanned_bytes_breakdown "Infrequent" as data_scanned_bytes | analytics_tier as datatier |fields data_scanned_bytes, query, is_aggregate, query_type, status_message, user_name, datatier| if (query_type == "View Maintenance", "Scheduled Views", query_type) as query_type| data_scanned_bytes / 1Gi as gbytes| timeslice 1h|sum (gbytes) as gbytes by _timeslice, user_name| fillmissing timeslice (1h) | gbytes * ' + str(
+    LOG_INFREQUENT_SCAN_CREDIT_RATE) + ' as credits'
+TRACES_INGESTED = '_index=sumologic_volume _sourceCategory="sourcecategory_tracing_volume"| parse regex "\\"(?<sourcecategory>[^\\"]+)\\"\\:(?<data>\\{[^\\}]*\\})" multi| json field=data "billedBytes","spansCount" as bytes, spans| bytes/1Gi as gbytes  | timeslice 1h | sum(gbytes) as gbytes, sum(spans) as spans by _timeslice, sourcecategory| gbytes*' + str(
+    TRACING_CREDIT_RATE) + ' as credits '
+# METRICS_INGESTED = '_index=sumologic_volume _sourceCategory="sourcecategory_metrics_volume"| parse regex "\\"(?<sourcecategory>[^\\"]+)\\"\\:(?<data>\\{[^\\}]*\\})" multi| json field=data "dataPoints"| timeslice 1h | sum(datapoints) as datapoints by _timeslice, sourcecategory| datapoints /1000 *' + str(METRICS_CREDIT_RATE) + ' as credits'
+METRICS_INGESTED = '_index=sumologic_volume _sourceCategory="sourcecategory_metrics_volume" datapoints| parse regex "\\"(?<sourcecategory>[^\\"]+)\\"\\:\\{\\"dataPoints\\"\\:(?<datapoints>\\d+)\\}" multi| timeslice 24h | sum(datapoints) as datapoints by sourcecategory, _timeslice| ((queryEndTime() - queryStartTime())/(1000*60)) as duration_in_min| datapoints / duration_in_min as %"DPM" | DPM/1000 as AvgKDPM | AvgKDPM *' + str(
+    METRICS_CREDIT_RATE) + ' as credits '
 # API RATE Limit constants
 MAX_TRIES = 10
 NUMBER_OF_CALLS = 4
@@ -102,15 +105,15 @@ def backoff(func):
             delay = delay * 2
         logger.error("Rate limited function failed after {0} retries.".format(MAX_TRIES))
         raise lastException
+
     return limited
 
 
 class SumoLogic:
-
     # number of records to return
     NUM_RECORDS = 1000
 
-    def __init__(self, access_id:str, access_key:str, deployment:str,  cookieFile='cookies.txt'):
+    def __init__(self, access_id: str, access_key: str, deployment: str, cookieFile='cookies.txt'):
         self.session = requests.Session()
         self.session.auth = (access_id, access_key)
         self.DEFAULT_VERSION = 'v1'
@@ -140,14 +143,16 @@ class SumoLogic:
                      }
         deployment_key = str(deployment).lower()
         if deployment_key not in endpoints:
-            raise ValueError(f"Unsupported SumoLogic deployment: {deployment}. Supported deployments: {', '.join(endpoints.keys())}")
+            raise ValueError(
+                f"Unsupported SumoLogic deployment: {deployment}. Supported deployments: {', '.join(endpoints.keys())}")
         return endpoints[deployment_key]
 
     def get_versioned_endpoint(self, version: str) -> str:
         return f'{self.endpoint}/{version}'
 
     @backoff
-    def get(self, method: str, params: Optional[Dict[str, Any]] = None, version: Optional[str] = None) -> requests.Response:
+    def get(self, method: str, params: Optional[Dict[str, Any]] = None,
+            version: Optional[str] = None) -> requests.Response:
         version = version or self.DEFAULT_VERSION
         endpoint = self.get_versioned_endpoint(version)
         r = self.session.get(endpoint + method, params=params)
@@ -157,7 +162,8 @@ class SumoLogic:
         return r
 
     @backoff
-    def post(self, method: str, params: Dict[str, Any], headers: Optional[Dict[str, str]] = None, version: Optional[str] = None) -> requests.Response:
+    def post(self, method: str, params: Dict[str, Any], headers: Optional[Dict[str, str]] = None,
+             version: Optional[str] = None) -> requests.Response:
         version = version or self.DEFAULT_VERSION
         endpoint = self.get_versioned_endpoint(version)
         r = self.session.post(endpoint + method, data=json.dumps(params), headers=headers)
@@ -166,8 +172,10 @@ class SumoLogic:
         r.raise_for_status()
         return r
 
-    def search_job(self, query: str, from_time: Optional[str] = None, to_time: Optional[str] = None, time_zone: str = 'UTC', by_receipt_time: bool = False) -> Dict[str, Any]:
-        params = {'query': query, 'from': from_time, 'to': to_time, 'timeZone': time_zone, 'byReceiptTime': by_receipt_time, 'autoParsingMode': 'AutoParse'}
+    def search_job(self, query: str, from_time: Optional[str] = None, to_time: Optional[str] = None,
+                   time_zone: str = 'UTC', by_receipt_time: bool = False) -> Dict[str, Any]:
+        params = {'query': query, 'from': from_time, 'to': to_time, 'timeZone': time_zone,
+                  'byReceiptTime': by_receipt_time, 'autoParsingMode': 'AutoParse'}
         r = self.post('/search/jobs', params)
         return json.loads(r.text)
 
@@ -175,18 +183,23 @@ class SumoLogic:
         r = self.get('/search/jobs/' + str(search_job['id']))
         return json.loads(r.text)
 
-    def search_job_messages(self, search_job: Dict[str, Any], limit: Optional[int] = None, offset: int = 0) -> Dict[str, Any]:
+    def search_job_messages(self, search_job: Dict[str, Any], limit: Optional[int] = None, offset: int = 0) -> Dict[
+        str, Any]:
         params = {'limit': limit, 'offset': offset}
         r = self.get('/search/jobs/' + str(search_job['id']) + '/messages', params)
         return json.loads(r.text)
 
-    def search_job_records(self, search_job: Dict[str, Any], limit: Optional[int] = None, offset: int = 0) -> Dict[str, Any]:
+    def search_job_records(self, search_job: Dict[str, Any], limit: Optional[int] = None, offset: int = 0) -> Dict[
+        str, Any]:
         params = {'limit': limit, 'offset': offset}
         r = self.get('/search/jobs/' + str(search_job['id']) + '/records', params)
         return json.loads(r.text)
 
-    def search_job_records_sync(self, query: str, from_time: Optional[str] = None, to_time: Optional[str] = None, time_zone: Optional[str] = None, by_receipt_time: bool = False) -> Union[List[Dict[str, Any]], Dict[str, Any]]:
-        searchjob = self.search_job(query, from_time=from_time, to_time=to_time, time_zone=time_zone, by_receipt_time=by_receipt_time)
+    def search_job_records_sync(self, query: str, from_time: Optional[str] = None, to_time: Optional[str] = None,
+                                time_zone: Optional[str] = None, by_receipt_time: bool = False) -> Union[
+        List[Dict[str, Any]], Dict[str, Any]]:
+        searchjob = self.search_job(query, from_time=from_time, to_time=to_time, time_zone=time_zone,
+                                    by_receipt_time=by_receipt_time)
         status = self.search_job_status(searchjob)
         numrecords = status['recordCount']
         while status['state'] != 'DONE GATHERING RESULTS':
@@ -196,7 +209,7 @@ class SumoLogic:
             numrecords = status['recordCount']
         if status['state'] == 'DONE GATHERING RESULTS':
             logger.info(f"numrecords {numrecords}")
-            jobrecords=[]
+            jobrecords = []
             iterations = numrecords // self.NUM_RECORDS + 1
 
             for iteration in range(1, iterations + 1):
@@ -204,12 +217,15 @@ class SumoLogic:
                                                   offset=((iteration - 1) * self.NUM_RECORDS))
                 for record in records['records']:
                     jobrecords.append(record)
-            return jobrecords   #returns a list
+            return jobrecords  # returns a list
         else:
             return status
 
-    def search_job_messages_sync(self, query: str, from_time: Optional[str] = None, to_time: Optional[str] = None, time_zone: Optional[str] = None, by_receipt_time: bool = False) -> Union[List[Dict[str, Any]], Dict[str, Any]]:
-        searchjob = self.search_job(query, from_time=from_time, to_time=to_time, time_zone=time_zone, by_receipt_time=by_receipt_time)
+    def search_job_messages_sync(self, query: str, from_time: Optional[str] = None, to_time: Optional[str] = None,
+                                 time_zone: Optional[str] = None, by_receipt_time: bool = False) -> Union[
+        List[Dict[str, Any]], Dict[str, Any]]:
+        searchjob = self.search_job(query, from_time=from_time, to_time=to_time, time_zone=time_zone,
+                                    by_receipt_time=by_receipt_time)
         status = self.search_job_status(searchjob)
         nummessages = status['messageCount']
         while status['state'] != 'DONE GATHERING RESULTS':
@@ -218,21 +234,25 @@ class SumoLogic:
             status = self.search_job_status(searchjob)
             nummessages = status['messageCount']
         if status['state'] == 'DONE GATHERING RESULTS':
-            jobmessages=[]
+            jobmessages = []
             iterations = nummessages // self.NUM_RECORDS + 1
 
             for iteration in range(1, iterations + 1):
                 messages = self.search_job_messages(searchjob, limit=self.NUM_RECORDS,
-                                                  offset=((iteration - 1) * self.NUM_RECORDS))
+                                                    offset=((iteration - 1) * self.NUM_RECORDS))
                 for message in messages['messages']:
                     jobmessages.append(message)
-            return jobmessages   #returns a list
+            return jobmessages  # returns a list
         else:
             return status
 
-    def export_credits_usage_report(self, from_time: Optional[str] = None, to_time: Optional[str] = None, group_by:str = "day", report_type:str = "detailed", include_deployment_charge: bool = False) -> str:
-        body = {'startDate': from_time,
-                'endDate': to_time,
+
+    def export_usage_report(self, from_time: Optional[str] = None, to_time: Optional[str] = None,
+                                    group_by: str = "day", report_type: str = "detailed",
+                                    include_deployment_charge: bool = False) -> str:
+        logger.debug(f"Exporting usage report with dates: {str(from_time)}, {str(to_time)}")
+        body = {'startDate': str(from_time),
+                'endDate': str(to_time),
                 'groupBy': group_by,
                 'reportType': report_type,
                 'includeDeploymentCharge': include_deployment_charge
@@ -240,13 +260,41 @@ class SumoLogic:
         r = self.post('/account/usage/report', body)
         return json.loads(r.text)
 
-    def get_billing_data(self, query: str, use_receipt_time: bool = True) -> Union[List[Dict[str, Any]], Dict[str, Any]]:
+    def export_usage_report_status(self, job_id: int)-> Union[List[Dict[str, Any]], Dict[str, Any]]:
+        r = self.get('/account/usage/report/' + str(job_id) + '/status')
+        return json.loads(r.text)
+
+    def export_usage_report_sync(self, from_time: Optional[str] = None, to_time: Optional[str] = None,
+                                    group_by: str = "day", report_type: str = "detailed",
+                                    include_deployment_charge: bool = False) -> str:
+        export_job = self.export_usage_report(from_time, to_time, group_by, report_type, include_deployment_charge)
+        status = self.export_usage_report_status(export_job['jobId'])
+        logger.debug(status)
+        while status['status'] != 'Success':
+            if status['status'] == 'CANCELLED':
+                break
+            status = self.export_usage_report_status(export_job['jobId'])
+            logger.debug(status)
+        if status['status'] == 'Success':
+            return requests.get(status['reportDownloadURL'])
+        else:
+            return None
+
+    def get_billing_data(self, query: str, use_receipt_time: bool = True) -> Union[
+        List[Dict[str, Any]], Dict[str, Any]]:
 
         default_start_datetime = datetime.now(timezone.utc) - timedelta(hours=QUERY_TIME_HOURS)
-        QUERY_START_DATETIME = default_start_datetime.strftime('%Y-%m-%dT%H:%M:%S')
-        QUERY_END_DATETIME = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S')
-        results = self.search_job_records_sync(query, QUERY_START_DATETIME, QUERY_END_DATETIME, by_receipt_time=use_receipt_time)
+        QUERY_START_DATETIME = default_start_datetime.strftime('%Y-%m-%dT%H:%M:%SZ')
+        QUERY_END_DATETIME = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+        results = self.search_job_records_sync(query, QUERY_START_DATETIME, QUERY_END_DATETIME,
+                                               by_receipt_time=use_receipt_time)
         return results
+
+    def get_billing_data_api(self, ) -> pd.DataFrame:
+
+        results = self.export_usage_report_sync()
+        df = pd.read_csv(io.StringIO(results.text))
+        return df
 
     def convert_logs_to_cbf(self, records: List[Dict[str, Any]]) -> List[Dict[str, str]]:
 
@@ -256,7 +304,8 @@ class SumoLogic:
                 record_map = record['map']
                 logger.debug(record_map)
                 results.append({
-                    'time/usage_start': datetime.fromtimestamp(float(record_map['_timeslice'].strip()) / 1000).replace(tzinfo=timezone.utc).isoformat(),
+                    'time/usage_start': datetime.fromtimestamp(float(record_map['_timeslice'].strip()) / 1000).replace(
+                        tzinfo=timezone.utc).isoformat(),
                     'resource/id': f"sourcecategory/{record_map['sourcecategory'].lower().replace('/', '|')}",
                     'resource/usage_family': record_map['datatier'],
                     'lineitem/type': "Usage",
@@ -281,7 +330,8 @@ class SumoLogic:
                 record_map = record['map']
                 logger.debug(record_map)
                 results.append({
-                    'time/usage_start': datetime.fromtimestamp(float(record_map['_timeslice'].strip()) / 1000).replace(tzinfo=timezone.utc).isoformat(),
+                    'time/usage_start': datetime.fromtimestamp(float(record_map['_timeslice'].strip()) / 1000).replace(
+                        tzinfo=timezone.utc).isoformat(),
                     'resource/id': f"username/{record_map['user_name'].lower()}",
                     'resource/usage_family': 'infrequent',
                     'lineitem/type': "Usage",
@@ -306,7 +356,8 @@ class SumoLogic:
                 record_map = record['map']
                 logger.debug(record_map)
                 results.append({
-                    'time/usage_start': datetime.fromtimestamp(float(record_map['_timeslice'].strip()) / 1000).replace(tzinfo=timezone.utc).isoformat(),
+                    'time/usage_start': datetime.fromtimestamp(float(record_map['_timeslice'].strip()) / 1000).replace(
+                        tzinfo=timezone.utc).isoformat(),
                     'resource/id': f"sourcecategory/{record_map['sourcecategory'].lower().replace('/', '|')}",
                     'resource/usage_family': 'traces',
                     'lineitem/type': "Usage",
@@ -331,7 +382,8 @@ class SumoLogic:
                 record_map = record['map']
                 logger.debug(record_map)
                 results.append({
-                    'time/usage_start': datetime.fromtimestamp(float(record_map['_timeslice'].strip()) / 1000).replace(tzinfo=timezone.utc).isoformat(),
+                    'time/usage_start': datetime.fromtimestamp(float(record_map['_timeslice'].strip()) / 1000).replace(
+                        tzinfo=timezone.utc).isoformat(),
                     'resource/id': f"sourcecategory/{record_map['sourcecategory'].lower().replace('/', '|')}",
                     'resource/usage_family': 'metrics',
                     'lineitem/type': "Usage",
@@ -346,6 +398,48 @@ class SumoLogic:
                 })
             except(KeyError, Exception) as e:
                 logger.warning(f"Skipping record: {e}")
+        return results
+
+    def convert_storage_to_cbf(self, df:pd.DataFrame) -> List[Dict[str, str]]:
+        results = []
+
+        metric_mappings = {
+            "Storage Credits": {
+                "resource/id": "log storage",
+                "resource/usage_family": "logs",
+                "lineitem/description": "log storage",
+                "resource/service": "Logs Storage",
+                "action/operation": "ingest",
+            },
+            "Infrequent Storage Credits": {
+                "resource/id": "infrequent log storage",
+                "resource/usage_family": "logs",
+                "lineitem/description": "infrequent log storage",
+                "resource/service": "Logs Storage",
+                "action/operation": "ingest",
+            },
+        }
+        for _, row in df.iterrows():
+            for metric, meta in metric_mappings.items():
+                amount = row[metric]
+                dt = datetime.strptime(row['Date'],"%m/%d/%y")
+                iso_date = dt.date().isoformat()
+
+                results.append({
+                    "time/usage_start": str(iso_date),
+                    "resource/id": meta["resource/id"],
+                    "resource/usage_family": meta["resource/usage_family"],
+                    "lineitem/type": "Usage",
+                    "lineitem/description": meta["lineitem/description"],
+                    "resource/service": meta["resource/service"],
+                    "resource/account": SUMO_ORG_ID,
+                    "resource/region": SUMO_DEPLOYMENT,
+                    "usage/units": "credits",
+                    "action/operation": meta["action/operation"],
+                    "usage/amount": amount,
+                    "cost/cost": f"{float(amount) * COST_PER_CREDIT:.6f}",
+                })
+
         return results
 
     def get_continuous_logs_cbf(self) -> List[Dict[str, str]]:
@@ -364,6 +458,10 @@ class SumoLogic:
         results = self.get_billing_data(INFREQUENT_LOG_SCANNED, use_receipt_time=False)
         return self.convert_logs_scanned_to_cbf(results)
 
+    def get_logs_storage_cbf(self) -> List[Dict[str, str]]:
+        df = self.get_billing_data_api()
+        return (self.convert_storage_to_cbf(df))
+
     def get_metrics_cbf(self) -> List[Dict[str, str]]:
         results = self.get_billing_data(METRICS_INGESTED)
         return self.convert_metrics_to_cbf(results)
@@ -378,6 +476,7 @@ class CZAnycostOp(Enum):
     REPLACE_HOURLY = 1
     REPLACE_DROP = 2
     SUM = 3
+
 
 class CloudZero:
 
@@ -425,12 +524,18 @@ class CloudZero:
             except Exception as e:
                 logger.warning(f'Failed to post anycost stream: {data} \n {str(e)}')
         else:
-            return('No anycost data to post')
+            return ('No anycost data to post')
+
 
 def lambda_handler(event: Dict[str, Any], context: Dict[str, Any]) -> None:
     logger.info("=== Starting Lambda Handler ===")
     sumo = SumoLogic(SUMO_ACCESS_KEY, SUMO_SECRET_KEY, SUMO_DEPLOYMENT)
-    print(sumo.export_credits_usage_report())
+    response = sumo.get_logs_storage_cbf()
+    print(response)
+
+
+
+
     # logger.info('Getting SumoLogic continuous log ingest cost from SumoLogic API')
     # continuous = sumo.get_continuous_logs_cbf()
     # logger.debug(json.dumps(continuous, indent=4))
@@ -472,8 +577,10 @@ def lambda_handler(event: Dict[str, Any], context: Dict[str, Any]) -> None:
 
     logger.info("=== Lambda Handler Completed ===")
 
+
 def main() -> None:
     lambda_handler({}, {})
+
 
 if __name__ == "__main__":
     main()
