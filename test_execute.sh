@@ -20,7 +20,10 @@ export CZ_AUTH_KEY="<set this>"
 
 # As of 08/2025 CZ only has the one API endpoint but this may change in the future. If so you can override here
 #export CZ_URL='https://api.cloudzero.com'
-
+#for normal operations this should be left at 24 hours and the script run once daily. You can increase this
+#for a "one off" run but only increase in multiples of 24 hours. Also be aware that for larger runs you may hit
+#the CZ upload size limit.
+#export QUERY_TIME_HOURS="24"
 
 # change this to "DEBUG" for more info in logs
 export LOGGING_LEVEL="INFO"
