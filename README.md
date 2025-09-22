@@ -41,10 +41,74 @@ these env variables. The defaults are not guaranteed to be correct for your cont
 - `TRACING_CREDIT_RATE`: 14
 - `COST_PER_CREDIT`: 0.15
 
+**Backfill Options:**
+- `BACKFILL_MODE`: Enable backfill mode (set automatically by command line)
+- `BACKFILL_START_DATE`: Start date for backfill (YYYY-MM-DD format)
+- `BACKFILL_END_DATE`: End date for backfill (YYYY-MM-DD format)
+- `DRY_RUN_MODE`: Preview mode without uploading data (set by --dry-run)
+- `RESUME_MODE`: Enable resume functionality (set automatically)
+- `AUTO_RESUME`: Enable automatic resume from state file
+
 **Other Options:**
 - `CZ_URL`: CloudZero API endpoint (default: "https://api.cloudzero.com")
-- `QUERY_TIME_HOURS`: Hours of historical data to query (default: 24, should not be changed)
+- `QUERY_TIME_DAYS`: Days of historical data to query in standard mode (default: 1)
 - `LOGGING_LEVEL`: Log level - "INFO" or "DEBUG" (default: "INFO")
+
+## Usage Modes
+
+### Standard Mode (Daily Operation)
+Processes the previous 24 hours of data - designed for daily scheduled execution:
+```bash
+./test_execute.sh                              # Process last 24 hours
+```
+
+### Backfill Mode (Historical Data)
+Process historical data for date ranges or specific periods. Includes automatic chunking for large datasets and intelligent resume capabilities:
+
+```bash
+# Backfill specific date range
+./test_execute.sh --backfill-start 2024-01-01 --backfill-end 2024-01-31
+
+# Backfill last N days
+./test_execute.sh --days 30
+
+# Preview backfill without uploading (dry-run)
+./test_execute.sh --days 7 --dry-run
+```
+
+### Automatic Resume System
+The adapter includes a robust automatic resume system for handling interrupted backfills:
+
+```bash
+# Start a backfill
+./test_execute.sh --days 30
+
+# If interrupted, automatically resume from where it left off
+./test_execute.sh --resume                     # No date needed - automatic!
+
+# Manual resume (if needed)
+./test_execute.sh --resume 2024-01-15          # Resume from specific date
+```
+
+**How it works:**
+- Creates state files (`.backfill_state_*.json`) to track progress
+- Only marks days as complete when ALL services upload successfully
+- Automatically resumes from the day after the last successful day
+- Cleans up state files when backfill completes
+- Safe for dry-run mode (doesn't create state files)
+
+### Advanced Options
+
+```bash
+# Verbose logging for troubleshooting
+./test_execute.sh --days 7 --verbose
+
+# Quiet mode for production
+./test_execute.sh --quiet
+
+# Combine options
+./test_execute.sh --days 30 --dry-run --verbose
+```
 
 ## Local Development
 
@@ -70,10 +134,12 @@ Edit test_execute.sh with your actual credentials
 
 ### Execute Locally
 
-
 ```bash
-# Using your edited copy of the test_execute.sh script
+# Standard daily operation
 ./test_execute.sh
+
+# Historical backfill
+./test_execute.sh --days 7 --dry-run
 ```
 
 
@@ -87,6 +153,8 @@ Edit test_execute.sh with your actual credentials
 ├── Dockerfile                 # Container image for Lambda deployment
 ├── create_lambda_zip.sh       # Automated Lambda zip creation script
 ├── test_execute.sh            # Template test script
+├── test.sh                    # Development test script with credentials
+├── .backfill_state_*.json     # Auto-generated state files for resume functionality
 └── README.md                  # This file
 ```
 
@@ -404,7 +472,8 @@ gcloud functions deploy sumo-cz-adapter \
 ### Common Issues
 
 **Function Timeout:**
-- Minimum timeout: 300 seconds (5 minutes)
+- Standard mode: Minimum timeout 300 seconds (5 minutes)
+- Backfill mode: May require 900+ seconds for large date ranges
 - SumoLogic export API can take time to generate reports
 - Consider increasing timeout for large data volumes
 
@@ -412,6 +481,19 @@ gcloud functions deploy sumo-cz-adapter \
 - Adapter includes exponential backoff for 429 errors
 - Monitor CloudWatch logs for rate limiting patterns
 - SumoLogic API has rate limits per minute
+- Backfill mode processes day-by-day to manage rate limits
+
+**Backfill Issues:**
+- Large datasets automatically chunked to stay under 10MB API limit
+- State files track progress for automatic resume capability
+- Use `--dry-run` to preview backfill without uploading data
+- Failed services on any day prevent that day from being marked complete
+
+**Resume Functionality:**
+- State files created as `.backfill_state_YYYYMMDD_to_YYYYMMDD.json`
+- Only days with ALL successful services are marked complete
+- Use `--resume` (no date) for automatic resume from state file
+- State files cleaned up automatically when backfill completes
 
 **Date Parsing Errors:**
 - Fixed in current version with flexible date parsing
@@ -426,12 +508,23 @@ gcloud functions deploy sumo-cz-adapter \
 - Verify CZ_ANYCOST_STREAM_CONNECTION_ID is correct
 - Check CloudZero API authentication
 - Monitor for 4xx/5xx responses in logs
+- Large payloads automatically chunked to prevent upload failures
 
 ### Testing
 ```bash
-# Test with debug logging
+# Test standard mode with debug logging
 export LOGGING_LEVEL=DEBUG
 ./test_execute.sh
+
+# Test backfill with dry-run (safe testing)
+./test_execute.sh --days 7 --dry-run --verbose
+
+# Test automatic resume functionality
+./test_execute.sh --days 3 --dry-run    # Start backfill
+./test_execute.sh --resume              # Test auto-resume
+
+# Check state file creation (after non-dry-run backfill)
+ls -la .backfill_state_*.json
 
 # Check zip file contents
 unzip -l sumo-anycost-lambda.zip
