@@ -1196,16 +1196,13 @@ class CloudZero:
                 logger.info(f"🔍 DRY RUN: Would upload {len(data)} records split into {len(chunks)} chunks, total {total_size / 1024 / 1024:.2f}MB")
 
                 # Show operation details for chunked dry-run
-                if opstring == "replace_hourly" and len(chunks) > 1:
-                    logger.info(f"  🔍 First chunk would use REPLACE_HOURLY, remaining {len(chunks)-1} chunks would use SUM")
+                if len(chunks) > 1:
+                    logger.info(f"  🔍 All {len(chunks)} chunks would use {opstring.upper()} operation")
 
                 for chunk_num, chunk in enumerate(chunks, 1):
                     chunk_size = calculate_payload_size(chunk, opstring)
-                    chunk_operation = opstring if chunk_num == 1 else "sum"
-                    op_display = chunk_operation.upper()
-                    if chunk_num > 1:
-                        op_display += " (preserving previous chunks)"
-                    logger.debug(f"  🔍 Chunk {chunk_num}: {len(chunk)} records, {chunk_size / 1024 / 1024:.2f}MB ({op_display})")
+                    chunk_operation = opstring
+                    logger.debug(f"  🔍 Chunk {chunk_num}: {len(chunk)} records, {chunk_size / 1024 / 1024:.2f}MB ({chunk_operation.upper()})")
 
                 return {
                     "dry_run": True,
@@ -1228,11 +1225,13 @@ class CloudZero:
             chunks = chunk_data_by_size(data, opstring)
             logger.info(f"Chunked upload: {len(data)} records split into {len(chunks)} chunks, total {total_size / 1024 / 1024:.2f}MB")
 
-            # CRITICAL: For chunked uploads, only the FIRST chunk should use the original operation
-            # (which might be REPLACE_HOURLY). All subsequent chunks MUST use SUM to avoid
-            # wiping out the data from previous chunks.
-            if opstring == "replace_hourly" and len(chunks) > 1:
-                logger.warning(f"  ⚠️  REPLACE_HOURLY with {len(chunks)} chunks: First chunk will REPLACE, remaining chunks will SUM")
+            # For chunked uploads: ALL chunks of the same service use the SAME operation
+            # - REPLACE_DROP service: ALL chunks use REPLACE_DROP (replaces data in time range)
+            # - SUM services: ALL chunks use SUM (adds to existing data)
+            if opstring == "replace_drop" and len(chunks) > 1:
+                logger.info(f"  📤 REPLACE_DROP service with {len(chunks)} chunks: ALL chunks will use REPLACE_DROP")
+            elif len(chunks) > 1:
+                logger.debug(f"  📤 {opstring.upper()} service with {len(chunks)} chunks: ALL chunks will use {opstring.upper()}")
 
             results = []
             successful_chunks = 0
@@ -1240,13 +1239,10 @@ class CloudZero:
             for chunk_num, chunk in enumerate(chunks, 1):
                 chunk_size = calculate_payload_size(chunk, opstring)
 
-                # Use original operation for first chunk, SUM for subsequent chunks
-                chunk_operation = opstring if chunk_num == 1 else "sum"
+                # All chunks of the same service use the same operation
+                chunk_operation = opstring
 
-                if chunk_num == 1:
-                    logger.debug(f"  Uploading chunk {chunk_num}/{len(chunks)}: {len(chunk)} records, {chunk_size / 1024 / 1024:.2f}MB ({chunk_operation.upper()})")
-                else:
-                    logger.debug(f"  Uploading chunk {chunk_num}/{len(chunks)}: {len(chunk)} records, {chunk_size / 1024 / 1024:.2f}MB (SUM - preserving previous chunks)")
+                logger.debug(f"  Uploading chunk {chunk_num}/{len(chunks)}: {len(chunk)} records, {chunk_size / 1024 / 1024:.2f}MB ({chunk_operation.upper()})")
 
                 try:
                     result = self._upload_chunk(chunk, chunk_operation, chunk_num, len(chunks))
@@ -1290,8 +1286,8 @@ class CloudZero:
 
 
 def process_day_data(sumo: SumoLogic, cz: CloudZero, day_start: datetime, day_end: datetime,
-                    current_date: str, replace_hourly_used: bool) -> tuple[dict, bool]:
-    """Process all service types for a single day. Returns (day_stats, replace_hourly_used)"""
+                    current_date: str, first_service_processed: bool) -> tuple[dict, bool]:
+    """Process all service types for a single day. Returns (day_stats, first_service_processed)"""
 
     # Initialize day statistics
     day_stats = {
@@ -1332,13 +1328,17 @@ def process_day_data(sumo: SumoLogic, cz: CloudZero, day_start: datetime, day_en
         try:
             data = data_getter()
             if data:
-                # Determine the correct operation: REPLACE_HOURLY only for the first successful upload
-                if not replace_hourly_used:
-                    operation = CZAnycostOp.REPLACE_HOURLY
-                    logger.debug(f"{'    ' if BACKFILL_MODE else '  '}Using REPLACE_HOURLY operation (first upload for {current_date})")
+                # Determine the correct operation based on service type:
+                # - First service (continuous logs): REPLACE_DROP for all chunks
+                # - All other services: SUM for all chunks
+                is_first_service = service_name == "continuous logs"
+
+                if is_first_service:
+                    operation = CZAnycostOp.REPLACE_DROP
+                    logger.debug(f"{'    ' if BACKFILL_MODE else '  '}Using REPLACE_DROP operation (first service: {service_name})")
                 else:
                     operation = CZAnycostOp.SUM
-                    logger.debug(f"{'    ' if BACKFILL_MODE else '  '}Using SUM operation (REPLACE_HOURLY already used for {current_date})")
+                    logger.debug(f"{'    ' if BACKFILL_MODE else '  '}Using SUM operation (subsequent service: {service_name})")
 
                 # Enhanced progress tracking for large datasets
                 estimated_chunks, total_size = estimate_chunk_count(data, "sum")  # Use "sum" as default for estimation
@@ -1376,10 +1376,10 @@ def process_day_data(sumo: SumoLogic, cz: CloudZero, day_start: datetime, day_en
 
                 logger.debug(f"{'    ' if BACKFILL_MODE else '  '}CloudZero response: {results}")
 
-                # Mark REPLACE_HOURLY as used after first successful upload
-                if not replace_hourly_used and not (isinstance(results, dict) and results.get('dry_run')):
-                    replace_hourly_used = True
-                    logger.debug(f"{'    ' if BACKFILL_MODE else '  '}REPLACE_HOURLY now marked as used for {current_date}")
+                # Mark first service as processed after successful upload
+                if is_first_service and not (isinstance(results, dict) and results.get('dry_run')):
+                    first_service_processed = True
+                    logger.debug(f"{'    ' if BACKFILL_MODE else '  '}First service ({service_name}) processing completed for {current_date}")
 
                 # Track successful service
                 day_stats['records'][service_name] = len(data)
@@ -1403,7 +1403,7 @@ def process_day_data(sumo: SumoLogic, cz: CloudZero, day_start: datetime, day_en
             day_stats['failed_services_list'].append(service_name)
             # Continue with other services even if one fails
 
-    return day_stats, replace_hourly_used
+    return day_stats, first_service_processed
 
 
 def lambda_handler(event: Dict[str, Any], context: Dict[str, Any]) -> None:
@@ -1498,13 +1498,13 @@ def lambda_handler(event: Dict[str, Any], context: Dict[str, Any]) -> None:
             progress.current_day = adjusted_day_num - 1  # Will be incremented in start_day
             progress.start_day(str(current_date))
 
-            # Track whether REPLACE_HOURLY has been used for this day
-            replace_hourly_used = False
+            # Track whether first service has been processed for this day
+            first_service_processed = False
 
             try:
                 # Process all services for this day using unified logic
-                day_stats, replace_hourly_used = process_day_data(
-                    sumo, cz, day_start, day_end, str(current_date), replace_hourly_used
+                day_stats, first_service_processed = process_day_data(
+                    sumo, cz, day_start, day_end, str(current_date), first_service_processed
                 )
 
             except Exception as e:
@@ -1569,16 +1569,16 @@ def lambda_handler(event: Dict[str, Any], context: Dict[str, Any]) -> None:
         # Standard mode - unified behavior using same logic as backfill
         logger.info("Running in STANDARD MODE")
 
-        # Track REPLACE_HOURLY usage in standard mode
-        replace_hourly_used = False
+        # Track first service processing in standard mode
+        first_service_processed = False
 
         # Generate current date for display (previous 24 hours)
         current_date = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
 
         # Process all services for the previous day using unified logic
         # Pass None for day_start/day_end to trigger standard mode methods
-        day_stats, replace_hourly_used = process_day_data(
-            sumo, cz, None, None, current_date, replace_hourly_used
+        day_stats, first_service_processed = process_day_data(
+            sumo, cz, None, None, current_date, first_service_processed
         )
 
         # Log summary for standard mode
