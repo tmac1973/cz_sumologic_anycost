@@ -8,6 +8,7 @@
 #   ./test_execute.sh --backfill-start 2024-01-01 --backfill-end 2024-01-07  # Backfill date range
 #   ./test_execute.sh --days 30 --dry-run               # Preview 30-day backfill
 #   ./test_execute.sh --days 7 --verbose                # Backfill with debug logging
+#   ./test_execute.sh --days 30 --resume                # Auto-resume backfill from state file
 #   ./test_execute.sh --days 30 --resume 2024-01-15     # Resume backfill from specific date
 #
 
@@ -62,13 +63,14 @@ if [[ "$1" == "-h" ]] || [[ "$1" == "--help" ]]; then
     echo "  ./test_execute.sh --dry-run [other options]                         # Preview mode (no uploads)"
     echo "  ./test_execute.sh --verbose [other options]                         # Debug logging"
     echo "  ./test_execute.sh --quiet [other options]                           # Minimal logging"
-    echo "  ./test_execute.sh --resume YYYY-MM-DD [other options]               # Resume from date"
+    echo "  ./test_execute.sh --resume [YYYY-MM-DD] [other options]             # Resume automatically or from date"
     echo ""
     echo "Examples:"
     echo "  ./test_execute.sh                                                    # Daily run (standard)"
     echo "  ./test_execute.sh --days 7                                          # Backfill last week"
     echo "  ./test_execute.sh --days 30 --dry-run                               # Preview month backfill"
     echo "  ./test_execute.sh --backfill-start 2024-01-01 --backfill-end 2024-01-31  # January 2024"
+    echo "  ./test_execute.sh --days 30 --resume                                # Auto-resume from state file"
     echo "  ./test_execute.sh --days 30 --resume 2024-01-15 --verbose           # Resume with debug logs"
     echo ""
     echo "Backfill Features:"
@@ -78,6 +80,12 @@ if [[ "$1" == "-h" ]] || [[ "$1" == "--help" ]]; then
     echo "  • Resume capability for interrupted backfills"
     echo "  • Dry-run mode to preview operations without uploading"
     echo "  • Comprehensive error handling and retry logic"
+    echo ""
+    echo "Resume Features:"
+    echo "  • --resume (no date): Automatically resumes from state file"
+    echo "  • --resume YYYY-MM-DD: Manually resume from specific date"
+    echo "  • State files track progress for interrupted backfills"
+    echo "  • Automatic cleanup when backfill completes"
     echo ""
     exit 0
 fi
