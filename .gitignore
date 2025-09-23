@@ -3,3 +3,5 @@ CLAUDE.md
 /sumo-anycost-lambda/
 /temp_downloads/
 /temp_lambda_venv/
+/dry_run/
+/.venv

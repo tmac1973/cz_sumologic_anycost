@@ -906,6 +906,8 @@ class SumoLogic:
     def convert_storage_to_cbf(self, data: List[Dict[str, str]]) -> List[Dict[str, str]]:
         results = []
 
+        logger.debug(f"convert_storage_to_cbf: Processing {len(data)} rows")
+
         metric_mappings = {
             "Storage Credits": {
                 "resource/id": "log storage",
@@ -923,14 +925,29 @@ class SumoLogic:
             },
         }
         for row in data:
+            logger.debug(f"Processing row: Date={row.get('Date', 'N/A')}, Storage Credits={row.get('Storage Credits', 'N/A')}, Infrequent Storage Credits={row.get('Infrequent Storage Credits', 'N/A')}")
+
             for metric, meta in metric_mappings.items():
-                amount = row[metric]
+                amount_str = row.get(metric, '0')
+
+                # Skip if amount is zero, empty, or not a valid number
+                try:
+                    amount_float = float(amount_str)
+                    if amount_float <= 0:
+                        logger.debug(f"Skipping {metric} with amount {amount_str} (zero or negative)")
+                        continue
+                except (ValueError, TypeError):
+                    logger.debug(f"Skipping {metric} with invalid amount: {amount_str}")
+                    continue
+
                 # Parse date string to datetime - try multiple formats
                 dt = None
-                date_str = row['Date']
+                date_str = row.get('Date', 'N/A').strip().strip('"')  # Remove quotes and whitespace
 
-                # Try different date formats
-                for fmt in ["%Y-%m-%d", "%m/%d/%y"]:
+                # Try multiple date formats in order of likelihood
+                date_formats = ["%Y-%m-%d", "%m/%d/%y", "%m/%d/%Y", "%Y/%m/%d"]
+
+                for fmt in date_formats:
                     try:
                         dt = datetime.strptime(date_str, fmt)
                         break
@@ -943,6 +960,8 @@ class SumoLogic:
 
                 iso_date = dt.date().isoformat()
 
+                logger.debug(f"Adding {metric} record: amount={amount_float}, date={iso_date}")
+
                 results.append({
                     "time/usage_start": str(iso_date),
                     "resource/id": meta["resource/id"],
@@ -954,10 +973,11 @@ class SumoLogic:
                     "resource/region": SUMO_DEPLOYMENT,
                     "usage/units": "credits",
                     "action/operation": meta["action/operation"],
-                    "usage/amount": str(amount),
-                    "cost/cost": f"{float(amount) * COST_PER_CREDIT:.6f}",
+                    "usage/amount": str(amount_float),
+                    "cost/cost": f"{amount_float * COST_PER_CREDIT:.6f}",
                 })
 
+        logger.debug(f"convert_storage_to_cbf: Returning {len(results)} records")
         return results
 
     def get_continuous_logs_cbf(self) -> List[Dict[str, str]]:
@@ -1004,18 +1024,21 @@ class SumoLogic:
             try:
                 # Parse date - try multiple formats
                 row_date = None
-                date_str = row['Date']
+                date_str = row.get('Date', 'N/A').strip().strip('"')  # Remove quotes and whitespace
 
-                # Try MM/dd/yy format first
-                try:
-                    row_date = datetime.strptime(date_str, "%m/%d/%y").date()
-                except ValueError:
-                    # Try YYYY-MM-DD format
+                # Try multiple date formats in order of likelihood
+                date_formats = ["%Y-%m-%d", "%m/%d/%y", "%m/%d/%Y", "%Y/%m/%d"]
+
+                for fmt in date_formats:
                     try:
-                        row_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+                        row_date = datetime.strptime(date_str, fmt).date()
+                        break
                     except ValueError:
-                        logger.warning(f"Could not parse date: {date_str}")
                         continue
+
+                if row_date is None:
+                    logger.warning(f"Could not parse date: {date_str}")
+                    continue
 
                 if row_date == previous_day:
                     filtered_data.append(row)
@@ -1027,35 +1050,51 @@ class SumoLogic:
 
     def get_logs_storage_cbf_for_date(self, start_datetime: datetime, end_datetime: datetime) -> List[Dict[str, str]]:
         data = self.get_billing_data_api()
+        logger.debug(f"get_logs_storage_cbf_for_date: Retrieved {len(data)} rows from API")
 
         # Filter to only include the specified date range
         target_date = start_datetime.date()
+        logger.debug(f"get_logs_storage_cbf_for_date: Looking for target date {target_date}")
 
         # Filter data to only include records from the target date
         filtered_data = []
+        sample_count = 0
         for row in data:
             try:
+                # Show first few rows for debugging
+                if sample_count < 3:
+                    logger.debug(f"Sample row {sample_count + 1}: {row}")
+                    sample_count += 1
+
                 # Parse date - try multiple formats
                 row_date = None
-                date_str = row['Date']
+                date_str = row.get('Date', 'N/A').strip().strip('"')  # Remove quotes and whitespace
 
-                # Try MM/dd/yy format first
-                try:
-                    row_date = datetime.strptime(date_str, "%m/%d/%y").date()
-                except ValueError:
-                    # Try YYYY-MM-DD format
+                # Try multiple date formats in order of likelihood
+                date_formats = ["%Y-%m-%d", "%m/%d/%y", "%m/%d/%Y", "%Y/%m/%d"]
+
+                for fmt in date_formats:
                     try:
-                        row_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+                        row_date = datetime.strptime(date_str, fmt).date()
+                        logger.debug(f"Parsed '{date_str}' as {fmt} -> {row_date}")
+                        break
                     except ValueError:
-                        logger.warning(f"Could not parse date: {date_str}")
                         continue
 
+                if row_date is None:
+                    logger.debug(f"Could not parse date with any format: '{date_str}'")
+                    continue
+
+                logger.debug(f"Checking row: date_str='{date_str}' -> row_date={row_date}, target={target_date}")
+
                 if row_date == target_date:
+                    logger.debug(f"Found matching row: Date={date_str}, Storage Credits={row.get('Storage Credits')}, Infrequent Storage Credits={row.get('Infrequent Storage Credits')}")
                     filtered_data.append(row)
             except Exception as e:
                 logger.warning(f"Error processing row: {e}")
                 continue
 
+        logger.debug(f"get_logs_storage_cbf_for_date: Found {len(filtered_data)} rows matching {target_date}")
         return self.convert_storage_to_cbf(filtered_data)
 
     def get_metrics_cbf(self) -> List[Dict[str, str]]:
@@ -1131,6 +1170,44 @@ def estimate_chunk_count(data: List[Dict[str, str]], operation: str) -> tuple[in
     return estimated_chunks, total_size
 
 
+def ensure_dry_run_folder() -> str:
+    """Create dry_run folder if it doesn't exist and return the path"""
+    dry_run_path = os.path.join(os.getcwd(), "dry_run")
+    if not os.path.exists(dry_run_path):
+        os.makedirs(dry_run_path)
+        logger.info(f"📁 Created dry_run folder: {dry_run_path}")
+    return dry_run_path
+
+
+def write_dry_run_data(data: List[Dict[str, str]], operation: str, service_name: str, date: str) -> str:
+    """Write CBF data to JSON file in dry_run folder"""
+    dry_run_path = ensure_dry_run_folder()
+
+    # Sanitize service name for filename (replace spaces/special chars with underscores)
+    safe_service_name = service_name.replace(' ', '_').replace('/', '_')
+    filename = f"{date}_{safe_service_name}.json"
+    filepath = os.path.join(dry_run_path, filename)
+
+    # Prepare the data structure that would be sent to CloudZero
+    payload = {
+        "operation": operation,
+        "data": data,
+        "month": data[0]["time/usage_start"] if data else "",
+        "metadata": {
+            "service": service_name,
+            "date": date,
+            "record_count": len(data),
+            "generated_at": datetime.now(timezone.utc).isoformat()
+        }
+    }
+
+    with open(filepath, 'w') as f:
+        json.dump(payload, f, indent=2)
+
+    logger.debug(f"📝 Wrote {len(data)} records to {filepath}")
+    return filepath
+
+
 class CZAnycostOp(Enum):
     REPLACE_HOURLY = 1
     REPLACE_DROP = 2
@@ -1162,7 +1239,8 @@ class CloudZero:
         r.raise_for_status()
         return r
 
-    def post_anycost_stream(self, data: List[Dict[str, str]], operation: CZAnycostOp) -> Union[Dict[str, Any], str]:
+    def post_anycost_stream(self, data: List[Dict[str, str]], operation: CZAnycostOp,
+                           service_name: str = None, date: str = None) -> Union[Dict[str, Any], str]:
         if len(data) == 0:
             return 'No anycost data to post'
 
@@ -1177,96 +1255,113 @@ class CloudZero:
             case _:
                 raise Exception("No CZ operation specified.")
 
-        # Check for dry-run mode
-        if DRY_RUN_MODE:
-            # In dry-run mode, simulate upload without actually posting
-            estimated_chunks, total_size = estimate_chunk_count(data, opstring)
-
-            if total_size <= SAFE_PAYLOAD_SIZE_BYTES:
-                logger.info(f"🔍 DRY RUN: Would upload {len(data)} records, {total_size / 1024 / 1024:.2f}MB (single request)")
-                return {
-                    "dry_run": True,
-                    "operation": opstring,
-                    "records": len(data),
-                    "size_mb": round(total_size / 1024 / 1024, 2),
-                    "chunks": 1
-                }
-            else:
-                chunks = chunk_data_by_size(data, opstring)
-                logger.info(f"🔍 DRY RUN: Would upload {len(data)} records split into {len(chunks)} chunks, total {total_size / 1024 / 1024:.2f}MB")
-
-                # Show operation details for chunked dry-run
-                if len(chunks) > 1:
-                    logger.info(f"  🔍 All {len(chunks)} chunks would use {opstring.upper()} operation")
-
-                for chunk_num, chunk in enumerate(chunks, 1):
-                    chunk_size = calculate_payload_size(chunk, opstring)
-                    chunk_operation = opstring
-                    logger.debug(f"  🔍 Chunk {chunk_num}: {len(chunk)} records, {chunk_size / 1024 / 1024:.2f}MB ({chunk_operation.upper()})")
-
-                return {
-                    "dry_run": True,
-                    "operation": opstring,
-                    "records": len(data),
-                    "size_mb": round(total_size / 1024 / 1024, 2),
-                    "chunks": len(chunks)
-                }
-
-        # Normal mode - actual uploads
-        # Check if data needs to be chunked
+        # Determine chunking strategy first (common to both dry-run and normal mode)
         estimated_chunks, total_size = estimate_chunk_count(data, opstring)
+        size_mb = total_size / 1024 / 1024
+        needs_chunking = total_size > SAFE_PAYLOAD_SIZE_BYTES
 
-        if total_size <= SAFE_PAYLOAD_SIZE_BYTES:
+        # Create chunks if needed
+        if needs_chunking:
+            chunks = chunk_data_by_size(data, opstring)
+            num_chunks = len(chunks)
+        else:
+            chunks = [data]  # Single chunk
+            num_chunks = 1
+
+        # Now handle dry-run vs normal mode
+        if DRY_RUN_MODE:
+            return self._handle_dry_run_mode(chunks, opstring, service_name, date, total_size, size_mb, num_chunks)
+        else:
+            return self._handle_normal_mode(chunks, opstring, total_size, size_mb, num_chunks)
+
+    def _handle_dry_run_mode(self, chunks: List[List[Dict[str, str]]], opstring: str,
+                            service_name: str, date: str, total_size: int, size_mb: float, num_chunks: int) -> Dict[str, Any]:
+        """Handle dry-run mode processing"""
+        total_records = sum(len(chunk) for chunk in chunks)
+
+        if service_name and date:
+            if num_chunks == 1:
+                # Single file
+                filepath = write_dry_run_data(chunks[0], opstring, service_name, date)
+                logger.info(f"🔍 DRY RUN: Would upload {total_records} records, {size_mb:.2f}MB (single request)")
+                logger.info(f"📝 Data saved to: {filepath}")
+            else:
+                # Multiple chunks - write each chunk as a separate file
+                logger.info(f"🔍 DRY RUN: Would upload {total_records} records split into {num_chunks} chunks, total {size_mb:.2f}MB")
+
+                filepaths = []
+                for chunk_num, chunk in enumerate(chunks, 1):
+                    chunk_service_name = f"{service_name}_chunk{chunk_num}"
+                    chunk_filepath = write_dry_run_data(chunk, opstring, chunk_service_name, date)
+                    filepaths.append(chunk_filepath)
+                    chunk_size = calculate_payload_size(chunk, opstring)
+                    logger.debug(f"  🔍 Chunk {chunk_num}: {len(chunk)} records, {chunk_size / 1024 / 1024:.2f}MB ({opstring.upper()})")
+
+                logger.info(f"📝 Data saved to {len(filepaths)} files: {filepaths[0]} ... {filepaths[-1]}")
+        else:
+            # Fallback logging when service_name/date not provided
+            if num_chunks == 1:
+                logger.info(f"🔍 DRY RUN: Would upload {total_records} records, {size_mb:.2f}MB (single request)")
+            else:
+                logger.info(f"🔍 DRY RUN: Would upload {total_records} records split into {num_chunks} chunks, total {size_mb:.2f}MB")
+
+        # Return dry-run result
+        return {
+            "dry_run": True,
+            "operation": opstring,
+            "records": total_records,
+            "size_mb": round(size_mb, 2),
+            "chunks": num_chunks
+        }
+
+    def _handle_normal_mode(self, chunks: List[List[Dict[str, str]]], opstring: str,
+                           total_size: int, size_mb: float, num_chunks: int) -> Union[Dict[str, Any], str]:
+        """Handle normal mode processing (actual uploads)"""
+        total_records = sum(len(chunk) for chunk in chunks)
+
+        if num_chunks == 1:
             # Single upload - data fits within limit
-            logger.debug(f"Single upload: {len(data)} records, {total_size / 1024 / 1024:.2f}MB")
-            return self._upload_chunk(data, opstring, 1, 1)
+            logger.debug(f"Single upload: {total_records} records, {size_mb:.2f}MB")
+            return self._upload_chunk(chunks[0], opstring, 1, 1)
         else:
             # Chunked upload - data exceeds safe limit
-            chunks = chunk_data_by_size(data, opstring)
-            logger.info(f"Chunked upload: {len(data)} records split into {len(chunks)} chunks, total {total_size / 1024 / 1024:.2f}MB")
+            logger.info(f"Chunked upload: {total_records} records split into {num_chunks} chunks, total {size_mb:.2f}MB")
 
-            # For chunked uploads: ALL chunks of the same service use the SAME operation
-            # - REPLACE_DROP service: ALL chunks use REPLACE_DROP (replaces data in time range)
-            # - SUM services: ALL chunks use SUM (adds to existing data)
-            if opstring == "replace_drop" and len(chunks) > 1:
-                logger.info(f"  📤 REPLACE_DROP service with {len(chunks)} chunks: ALL chunks will use REPLACE_DROP")
-            elif len(chunks) > 1:
-                logger.debug(f"  📤 {opstring.upper()} service with {len(chunks)} chunks: ALL chunks will use {opstring.upper()}")
+            # Log chunking strategy information
+            if opstring == "replace_drop":
+                logger.info(f"  📤 REPLACE_DROP service with {num_chunks} chunks: ALL chunks will use REPLACE_DROP")
+            else:
+                logger.debug(f"  📤 {opstring.upper()} service with {num_chunks} chunks: ALL chunks will use {opstring.upper()}")
 
             results = []
             successful_chunks = 0
 
             for chunk_num, chunk in enumerate(chunks, 1):
                 chunk_size = calculate_payload_size(chunk, opstring)
-
-                # All chunks of the same service use the same operation
-                chunk_operation = opstring
-
-                logger.debug(f"  Uploading chunk {chunk_num}/{len(chunks)}: {len(chunk)} records, {chunk_size / 1024 / 1024:.2f}MB ({chunk_operation.upper()})")
+                logger.debug(f"  Uploading chunk {chunk_num}/{num_chunks}: {len(chunk)} records, {chunk_size / 1024 / 1024:.2f}MB ({opstring.upper()})")
 
                 try:
-                    result = self._upload_chunk(chunk, chunk_operation, chunk_num, len(chunks))
+                    result = self._upload_chunk(chunk, opstring, chunk_num, num_chunks)
                     results.append(result)
                     successful_chunks += 1
                     logger.debug(f"    ✓ Chunk {chunk_num} uploaded successfully")
 
                     # Small delay between chunks to avoid overwhelming the API
-                    if chunk_num < len(chunks):  # Don't delay after the last chunk
+                    if chunk_num < num_chunks:
                         time.sleep(0.5)
 
                 except Exception as e:
                     logger.error(f"    ✗ Chunk {chunk_num} failed: {e}")
                     results.append(f"Chunk {chunk_num} failed: {str(e)}")
-
                     # Continue with remaining chunks even if one fails
 
             # Return summary of chunked upload
             return {
                 "chunked_upload": True,
-                "total_chunks": len(chunks),
+                "total_chunks": num_chunks,
                 "successful_chunks": successful_chunks,
-                "failed_chunks": len(chunks) - successful_chunks,
-                "total_records": len(data),
+                "failed_chunks": num_chunks - successful_chunks,
+                "total_records": total_records,
                 "results": results
             }
 
@@ -1349,7 +1444,7 @@ def process_day_data(sumo: SumoLogic, cz: CloudZero, day_start: datetime, day_en
                     if estimated_chunks > 1:
                         logger.info(f"{'    ' if BACKFILL_MODE else '  '}Expected to chunk into ~{estimated_chunks} uploads")
 
-                results = cz.post_anycost_stream(data, operation)
+                results = cz.post_anycost_stream(data, operation, service_name, current_date)
 
                 # Enhanced result logging
                 if isinstance(results, dict) and results.get('dry_run'):

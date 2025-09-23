@@ -153,8 +153,6 @@ Edit test_execute.sh with your actual credentials
 ├── Dockerfile                 # Container image for Lambda deployment
 ├── create_lambda_zip.sh       # Automated Lambda zip creation script
 ├── test_execute.sh            # Template test script
-├── test.sh                    # Development test script with credentials
-├── .backfill_state_*.json     # Auto-generated state files for resume functionality
 └── README.md                  # This file
 ```
 
