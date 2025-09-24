@@ -42,148 +42,212 @@ class TestBackfillState:
         start_date = datetime(2025, 8, 1, tzinfo=timezone.utc).date()
         end_date = datetime(2025, 8, 31, tzinfo=timezone.utc).date()
 
-        state = BackfillState(state_file, start_date, end_date)
+        state = BackfillState(datetime.combine(start_date, datetime.min.time().replace(tzinfo=timezone.utc)),
+                             datetime.combine(end_date, datetime.min.time().replace(tzinfo=timezone.utc)))
 
-        assert state.start_date == start_date
-        assert state.end_date == end_date
-        assert state.current_date == start_date
-        assert state.completed_dates == []
-        assert state.failed_dates == []
-        assert state.total_records_uploaded == 0
+        assert state.backfill_start.date() == start_date
+        assert state.backfill_end.date() == end_date
 
-    def test_load_existing_state(self, temp_dir, sample_state_data):
+    def test_load_existing_state(self, temp_dir):
         """Test loading an existing backfill state"""
-        state_file = os.path.join(temp_dir, '.backfill_state_test.json')
+        start_date = datetime(2025, 8, 1, tzinfo=timezone.utc)
+        end_date = datetime(2025, 8, 31, tzinfo=timezone.utc)
 
-        # Create state file
+        # Create state instance and manually create state file
+        state = BackfillState(start_date, end_date)
+        state_file = state.state_file
+
+        # Create state data matching the actual format
+        state_data = {
+            'backfill_start': start_date.isoformat(),
+            'backfill_end': end_date.isoformat(),
+            'completed_days': ['2025-08-01', '2025-08-02', '2025-08-03'],
+            'last_completed_day': '2025-08-03',
+            'start_time': datetime.now().isoformat(),
+            'is_dry_run': False,
+            'last_updated': datetime.now().isoformat()
+        }
+
+        # Write state file
         with open(state_file, 'w') as f:
-            json.dump(sample_state_data, f)
+            json.dump(state_data, f)
 
-        state = BackfillState.load(state_file)
+        # Test loading
+        loaded = state.load_existing_state()
 
-        assert state.start_date.strftime('%Y-%m-%d') == '2025-08-01'
-        assert state.end_date.strftime('%Y-%m-%d') == '2025-08-31'
-        assert state.current_date.strftime('%Y-%m-%d') == '2025-08-15'
-        assert len(state.completed_dates) == 3
-        assert state.total_records_uploaded == 15000
+        assert loaded == True
+        assert state.backfill_start == start_date
+        assert state.backfill_end == end_date
+        assert len(state.completed_days) == 3
+        assert '2025-08-01' in state.completed_days
+        assert state.last_completed_day == '2025-08-03'
+
+        # Cleanup
+        if os.path.exists(state_file):
+            os.remove(state_file)
 
     def test_save_state(self, temp_dir):
         """Test saving backfill state to file"""
-        state_file = os.path.join(temp_dir, '.backfill_state_test.json')
-        start_date = datetime(2025, 8, 1, tzinfo=timezone.utc).date()
-        end_date = datetime(2025, 8, 31, tzinfo=timezone.utc).date()
+        start_date = datetime(2025, 8, 1, tzinfo=timezone.utc)
+        end_date = datetime(2025, 8, 31, tzinfo=timezone.utc)
 
-        state = BackfillState(state_file, start_date, end_date)
-        state.current_date = datetime(2025, 8, 5, tzinfo=timezone.utc).date()
-        state.total_records_uploaded = 5000
+        # Mock DRY_RUN_MODE to be False so state actually saves
+        with patch('sumo_anycost_lambda.DRY_RUN_MODE', False):
+            state = BackfillState(start_date, end_date)
+            state.completed_days.add('2025-08-01')
+            state.last_completed_day = '2025-08-01'
+            state.start_time = datetime(2025, 8, 1, 12, 0, tzinfo=timezone.utc)
 
-        state.save()
+            state.save_state()
 
-        # Verify file was created and contains correct data
-        assert os.path.exists(state_file)
-        with open(state_file, 'r') as f:
-            data = json.load(f)
-            assert data['current_date'] == '2025-08-05'
-            assert data['total_records_uploaded'] == 5000
+            # Verify file was created and contains correct data
+            assert os.path.exists(state.state_file)
+            with open(state.state_file, 'r') as f:
+                data = json.load(f)
+                assert data['backfill_start'] == start_date.isoformat()
+                assert data['backfill_end'] == end_date.isoformat()
+                assert '2025-08-01' in data['completed_days']
+                assert data['last_completed_day'] == '2025-08-01'
+
+            # Cleanup
+            if os.path.exists(state.state_file):
+                os.remove(state.state_file)
 
     def test_mark_date_completed(self, temp_dir):
         """Test marking a date as completed"""
-        state_file = os.path.join(temp_dir, '.backfill_state_test.json')
-        start_date = datetime(2025, 8, 1, tzinfo=timezone.utc).date()
-        end_date = datetime(2025, 8, 5, tzinfo=timezone.utc).date()
+        start_date = datetime(2025, 8, 1, tzinfo=timezone.utc)
+        end_date = datetime(2025, 8, 5, tzinfo=timezone.utc)
 
-        state = BackfillState(state_file, start_date, end_date)
-        completion_date = datetime(2025, 8, 1, tzinfo=timezone.utc).date()
+        with patch('sumo_anycost_lambda.DRY_RUN_MODE', False):
+            state = BackfillState(start_date, end_date)
+            completion_date = '2025-08-01'
+            day_stats = {'failed_services': 0, 'successful_services': 3}
 
-        state.mark_date_completed(completion_date, 1000)
+            state.mark_day_completed(completion_date, day_stats)
 
-        assert completion_date in state.completed_dates
-        assert state.total_records_uploaded == 1000
+            assert completion_date in state.completed_days
+            assert state.last_completed_day == completion_date
+
+            # Cleanup
+            if os.path.exists(state.state_file):
+                os.remove(state.state_file)
 
     def test_mark_date_failed(self, temp_dir):
-        """Test marking a date as failed"""
-        state_file = os.path.join(temp_dir, '.backfill_state_test.json')
-        start_date = datetime(2025, 8, 1, tzinfo=timezone.utc).date()
-        end_date = datetime(2025, 8, 5, tzinfo=timezone.utc).date()
+        """Test that a date with failed services is not marked as completed"""
+        start_date = datetime(2025, 8, 1, tzinfo=timezone.utc)
+        end_date = datetime(2025, 8, 5, tzinfo=timezone.utc)
 
-        state = BackfillState(state_file, start_date, end_date)
-        failed_date = datetime(2025, 8, 1, tzinfo=timezone.utc).date()
+        with patch('sumo_anycost_lambda.DRY_RUN_MODE', False):
+            state = BackfillState(start_date, end_date)
+            failed_date = '2025-08-01'
+            day_stats = {'failed_services': 2, 'successful_services': 1}  # Has failures
 
-        state.mark_date_failed(failed_date, "API timeout error")
+            state.mark_day_completed(failed_date, day_stats)
 
-        assert failed_date in state.failed_dates
+            # Date should NOT be marked as completed due to failures
+            assert failed_date not in state.completed_days
+            assert state.last_completed_day != failed_date
+
+            # Cleanup
+            if os.path.exists(state.state_file):
+                os.remove(state.state_file)
 
     def test_is_completed(self, temp_dir):
         """Test checking if backfill is completed"""
-        state_file = os.path.join(temp_dir, '.backfill_state_test.json')
-        start_date = datetime(2025, 8, 1, tzinfo=timezone.utc).date()
-        end_date = datetime(2025, 8, 3, tzinfo=timezone.utc).date()  # 3-day range
+        start_date = datetime(2025, 8, 1, tzinfo=timezone.utc)
+        end_date = datetime(2025, 8, 3, tzinfo=timezone.utc)  # 3-day range
 
-        state = BackfillState(state_file, start_date, end_date)
+        with patch('sumo_anycost_lambda.DRY_RUN_MODE', False):
+            state = BackfillState(start_date, end_date)
 
-        # Not completed initially
-        assert not state.is_completed()
+            # Not completed initially
+            assert not state.is_backfill_complete()
 
-        # Mark all dates as completed
-        state.mark_date_completed(datetime(2025, 8, 1, tzinfo=timezone.utc).date(), 100)
-        state.mark_date_completed(datetime(2025, 8, 2, tzinfo=timezone.utc).date(), 100)
-        state.mark_date_completed(datetime(2025, 8, 3, tzinfo=timezone.utc).date(), 100)
+            # Mark all dates as completed
+            state.mark_day_completed('2025-08-01', {'failed_services': 0})
+            state.mark_day_completed('2025-08-02', {'failed_services': 0})
+            state.mark_day_completed('2025-08-03', {'failed_services': 0})
 
-        # Should be completed now
-        assert state.is_completed()
+            # Should be completed now
+            assert state.is_backfill_complete()
+
+            # Cleanup
+            if os.path.exists(state.state_file):
+                os.remove(state.state_file)
 
     def test_cleanup_state_file(self, temp_dir):
         """Test cleaning up state file after completion"""
-        state_file = os.path.join(temp_dir, '.backfill_state_test.json')
-        start_date = datetime(2025, 8, 1, tzinfo=timezone.utc).date()
-        end_date = datetime(2025, 8, 1, tzinfo=timezone.utc).date()  # Single day
+        start_date = datetime(2025, 8, 1, tzinfo=timezone.utc)
+        end_date = datetime(2025, 8, 1, tzinfo=timezone.utc)  # Single day
 
-        state = BackfillState(state_file, start_date, end_date)
-        state.save()  # Create the file
+        with patch('sumo_anycost_lambda.DRY_RUN_MODE', False):
+            state = BackfillState(start_date, end_date)
+            state.save_state()  # Create the file
 
-        assert os.path.exists(state_file)
+            assert os.path.exists(state.state_file)
 
-        state.cleanup()
+            state.cleanup_state_file()
 
-        assert not os.path.exists(state_file)
+            assert not os.path.exists(state.state_file)
 
     def test_get_progress_percentage(self, temp_dir):
         """Test calculating progress percentage"""
-        state_file = os.path.join(temp_dir, '.backfill_state_test.json')
-        start_date = datetime(2025, 8, 1, tzinfo=timezone.utc).date()
-        end_date = datetime(2025, 8, 10, tzinfo=timezone.utc).date()  # 10-day range
+        start_date = datetime(2025, 8, 1, tzinfo=timezone.utc)
+        end_date = datetime(2025, 8, 10, tzinfo=timezone.utc)  # 10-day range
 
-        state = BackfillState(state_file, start_date, end_date)
+        with patch('sumo_anycost_lambda.DRY_RUN_MODE', False):
+            state = BackfillState(start_date, end_date)
 
-        # No progress initially
-        assert state.get_progress_percentage() == 0.0
+            # No progress initially
+            progress = state.get_progress_summary()
+            assert progress['completion_percentage'] == 0.0
+            assert progress['total_days'] == 10
+            assert progress['completed_days'] == 0
 
-        # Complete half the dates
-        for i in range(5):
-            date = start_date + timedelta(days=i)
-            state.mark_date_completed(date, 100)
+            # Complete half the dates
+            for i in range(5):
+                date = f"2025-08-{i+1:02d}"
+                state.mark_day_completed(date, {'failed_services': 0})
 
-        assert state.get_progress_percentage() == 50.0
+            progress = state.get_progress_summary()
+            assert progress['completion_percentage'] == 50.0
+            assert progress['completed_days'] == 5
+
+            # Cleanup
+            if os.path.exists(state.state_file):
+                os.remove(state.state_file)
 
     def test_load_nonexistent_file(self, temp_dir):
         """Test loading a non-existent state file"""
-        nonexistent_file = os.path.join(temp_dir, 'nonexistent.json')
+        start_date = datetime(2025, 8, 1, tzinfo=timezone.utc)
+        end_date = datetime(2025, 8, 5, tzinfo=timezone.utc)
 
-        state = BackfillState.load(nonexistent_file)
+        state = BackfillState(start_date, end_date)
+        # Remove the state file to simulate non-existent
+        if os.path.exists(state.state_file):
+            os.remove(state.state_file)
 
-        assert state is None
+        result = state.load_existing_state()
+
+        assert result == False  # Should return False for non-existent file
 
     def test_load_corrupted_file(self, temp_dir):
         """Test loading a corrupted state file"""
-        corrupted_file = os.path.join(temp_dir, 'corrupted.json')
+        start_date = datetime(2025, 8, 1, tzinfo=timezone.utc)
+        end_date = datetime(2025, 8, 5, tzinfo=timezone.utc)
 
+        state = BackfillState(start_date, end_date)
         # Create corrupted JSON file
-        with open(corrupted_file, 'w') as f:
+        with open(state.state_file, 'w') as f:
             f.write('invalid json content')
 
-        state = BackfillState.load(corrupted_file)
+        result = state.load_existing_state()
 
-        assert state is None
+        assert result == False  # Should return False for corrupted file
+
+        # Cleanup
+        if os.path.exists(state.state_file):
+            os.remove(state.state_file)
 
 
 class TestBackfillProgress:
@@ -191,14 +255,14 @@ class TestBackfillProgress:
 
     def test_create_progress_tracker(self):
         """Test creating a backfill progress tracker"""
-        start_date = datetime(2025, 8, 1, tzinfo=timezone.utc).date()
-        end_date = datetime(2025, 8, 5, tzinfo=timezone.utc).date()
+        total_days = 5
 
-        progress = BackfillProgress(start_date, end_date)
+        progress = BackfillProgress(total_days)
 
-        assert progress.start_date == start_date
-        assert progress.end_date == end_date
-        assert progress.current_date == start_date
+        assert progress.total_days == total_days
+        assert progress.current_day == 0
+        assert hasattr(progress, 'start_time')
+        assert hasattr(progress, 'daily_stats')
 
     def test_get_date_range(self):
         """Test getting the complete date range"""

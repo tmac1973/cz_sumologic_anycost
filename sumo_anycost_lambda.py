@@ -1328,8 +1328,8 @@ class CloudZero:
             logger.info(f"Chunked upload: {total_records} records split into {num_chunks} chunks, total {size_mb:.2f}MB")
 
             # Log chunking strategy information
-            if opstring == "replace_drop":
-                logger.info(f"  📤 REPLACE_DROP service with {num_chunks} chunks: ALL chunks will use REPLACE_DROP")
+            if opstring == "replace_hourly":
+                logger.info(f"  📤 REPLACE_HOURLY service with {num_chunks} chunks: ALL chunks will use REPLACE_HOURLY")
             else:
                 logger.debug(f"  📤 {opstring.upper()} service with {num_chunks} chunks: ALL chunks will use {opstring.upper()}")
 
@@ -1424,13 +1424,13 @@ def process_day_data(sumo: SumoLogic, cz: CloudZero, day_start: datetime, day_en
             data = data_getter()
             if data:
                 # Determine the correct operation based on service type:
-                # - First service (continuous logs): REPLACE_DROP for all chunks
+                # - First service (continuous logs): REPLACE_HOURLY for the first service of any given day
                 # - All other services: SUM for all chunks
                 is_first_service = service_name == "continuous logs"
 
                 if is_first_service:
-                    operation = CZAnycostOp.REPLACE_DROP
-                    logger.debug(f"{'    ' if BACKFILL_MODE else '  '}Using REPLACE_DROP operation (first service: {service_name})")
+                    operation = CZAnycostOp.REPLACE_HOURLY
+                    logger.debug(f"{'    ' if BACKFILL_MODE else '  '}Using REPLACE_HOURLY operation (first service: {service_name})")
                 else:
                     operation = CZAnycostOp.SUM
                     logger.debug(f"{'    ' if BACKFILL_MODE else '  '}Using SUM operation (subsequent service: {service_name})")

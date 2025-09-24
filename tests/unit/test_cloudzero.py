@@ -11,7 +11,7 @@ import shutil
 from unittest.mock import Mock, patch, mock_open
 from datetime import datetime, timezone
 
-from sumo_anycost_lambda import CloudZero
+from sumo_anycost_lambda import CloudZero, CZAnycostOp
 from tests.fixtures.test_data import CLOUDZERO_API_ERROR, LARGE_CBF_RECORDS
 
 
@@ -20,19 +20,20 @@ class TestCloudZeroInit:
 
     def test_init_with_valid_credentials(self):
         """Test successful initialization with valid credentials"""
-        cz = CloudZero('test_auth_key', 'test_connection_id')
+        cz = CloudZero('test_auth_key', 'https://api.cloudzero.com', 'test_connection_id')
 
-        assert cz.auth_key == 'test_auth_key'
         assert cz.stream_id == 'test_connection_id'
+        assert cz.endpoint == 'https://api.cloudzero.com'
         assert cz.session is not None
 
     def test_init_sets_headers(self):
         """Test that initialization sets correct headers"""
-        cz = CloudZero('test_auth_key', 'test_connection_id')
+        cz = CloudZero('test_auth_key', 'https://api.cloudzero.com', 'test_connection_id')
 
         expected_headers = {
-            'Authorization': 'Bearer test_auth_key',
-            'Content-Type': 'application/json'
+            'Authorization': 'test_auth_key',
+            'content-type': 'application/json',
+            'accept': 'application/json'
         }
 
         for key, value in expected_headers.items():
@@ -44,23 +45,23 @@ class TestCloudZeroChunking:
 
     @pytest.fixture
     def cz_client(self):
-        return CloudZero('test_auth_key', 'test_connection_id')
+        return CloudZero('test_auth_key', 'https://api.cloudzero.com', 'test_connection_id')
 
     def test_chunk_data_small_payload(self, cz_client, sample_continuous_logs_cbf):
         """Test chunking with small payload that doesn't need chunking"""
-        from sumo_anycost_lambda import chunk_data
+        from sumo_anycost_lambda import chunk_data_by_size
 
-        chunks = chunk_data(sample_continuous_logs_cbf, "replace_drop")
+        chunks = chunk_data_by_size(sample_continuous_logs_cbf, "replace_drop")
 
         assert len(chunks) == 1
         assert len(chunks[0]) == len(sample_continuous_logs_cbf)
 
     def test_chunk_data_large_payload(self, cz_client):
         """Test chunking with large payload that needs chunking"""
-        from sumo_anycost_lambda import chunk_data
+        from sumo_anycost_lambda import chunk_data_by_size
 
         # Use large test data
-        chunks = chunk_data(LARGE_CBF_RECORDS, "replace_drop")
+        chunks = chunk_data_by_size(LARGE_CBF_RECORDS, "replace_drop")
 
         assert len(chunks) > 1  # Should be split into multiple chunks
 
@@ -85,9 +86,9 @@ class TestCloudZeroChunking:
 
     def test_chunk_data_empty_input(self, cz_client):
         """Test chunking with empty input"""
-        from sumo_anycost_lambda import chunk_data
+        from sumo_anycost_lambda import chunk_data_by_size
 
-        chunks = chunk_data([], "replace_drop")
+        chunks = chunk_data_by_size([], "replace_drop")
 
         assert len(chunks) == 0
 
@@ -97,7 +98,7 @@ class TestCloudZeroNormalMode:
 
     @pytest.fixture
     def cz_client(self):
-        return CloudZero('test_auth_key', 'test_connection_id')
+        return CloudZero('test_auth_key', 'https://api.cloudzero.com', 'test_connection_id')
 
     def test_post_anycost_stream_success(self, cz_client, sample_continuous_logs_cbf, cloudzero_success_response):
         """Test successful data transmission in normal mode"""
@@ -108,6 +109,7 @@ class TestCloudZeroNormalMode:
         with patch.object(cz_client.session, 'post', return_value=mock_response):
             result = cz_client.post_anycost_stream(
                 sample_continuous_logs_cbf,
+                CZAnycostOp.REPLACE_DROP,
                 service_name='continuous_logs',
                 date='2025-09-22'
             )
@@ -123,6 +125,7 @@ class TestCloudZeroNormalMode:
         with patch.object(cz_client.session, 'post', return_value=mock_response):
             result = cz_client.post_anycost_stream(
                 LARGE_CBF_RECORDS,
+                CZAnycostOp.REPLACE_DROP,
                 service_name='test_large',
                 date='2025-09-22'
             )
@@ -149,12 +152,13 @@ class TestCloudZeroNormalMode:
         """Test transmission with empty data"""
         result = cz_client.post_anycost_stream(
             [],
+            CZAnycostOp.REPLACE_DROP,
             service_name='empty_test',
             date='2025-09-22'
         )
 
         # Should handle empty data gracefully
-        assert result is None
+        assert result == 'No anycost data to post'
 
 
 class TestCloudZeroDryRunMode:
@@ -162,7 +166,7 @@ class TestCloudZeroDryRunMode:
 
     @pytest.fixture
     def cz_client(self):
-        return CloudZero('test_auth_key', 'test_connection_id')
+        return CloudZero('test_auth_key', 'https://api.cloudzero.com', 'test_connection_id')
 
     @pytest.fixture
     def temp_dir(self):
@@ -175,128 +179,163 @@ class TestCloudZeroDryRunMode:
         """Test that dry-run folder is created if it doesn't exist"""
         from sumo_anycost_lambda import ensure_dry_run_folder
 
-        dry_run_path = os.path.join(temp_dir, 'dry_run')
+        # The function creates a dry_run folder in current working directory
+        # Let's test that it creates and returns the correct path
+        dry_run_path = ensure_dry_run_folder()
 
-        # Ensure directory doesn't exist initially
-        assert not os.path.exists(dry_run_path)
-
-        # Create the directory
-        ensure_dry_run_folder(dry_run_path)
-
-        # Verify it was created
+        # Verify it was created and returns the correct path
+        assert dry_run_path is not None
         assert os.path.exists(dry_run_path)
         assert os.path.isdir(dry_run_path)
+        assert 'dry_run' in dry_run_path
+
+        # Cleanup - remove the directory we created for the test
+        if os.path.exists(dry_run_path) and os.listdir(dry_run_path) == []:
+            os.rmdir(dry_run_path)
 
     def test_ensure_dry_run_folder_existing_directory(self, cz_client, temp_dir):
         """Test that existing dry-run folder is not modified"""
         from sumo_anycost_lambda import ensure_dry_run_folder
 
-        dry_run_path = os.path.join(temp_dir, 'dry_run')
-        os.makedirs(dry_run_path)
+        # First call to create the directory
+        dry_run_path = ensure_dry_run_folder()
 
         # Create a test file in the directory
         test_file = os.path.join(dry_run_path, 'test.txt')
         with open(test_file, 'w') as f:
             f.write('test content')
 
-        ensure_dry_run_folder(dry_run_path)
+        # Second call should not modify existing directory
+        dry_run_path_2 = ensure_dry_run_folder()
 
         # Verify directory still exists and file is unchanged
+        assert dry_run_path == dry_run_path_2  # Should return same path
         assert os.path.exists(dry_run_path)
         assert os.path.exists(test_file)
         with open(test_file, 'r') as f:
             assert f.read() == 'test content'
 
+        # Cleanup
+        if os.path.exists(test_file):
+            os.remove(test_file)
+        if os.path.exists(dry_run_path) and os.listdir(dry_run_path) == []:
+            os.rmdir(dry_run_path)
+
     def test_write_dry_run_data(self, cz_client, sample_continuous_logs_cbf, temp_dir):
         """Test writing dry-run data to JSON file"""
         from sumo_anycost_lambda import write_dry_run_data
 
-        dry_run_path = os.path.join(temp_dir, 'dry_run')
-        os.makedirs(dry_run_path)
-
-        write_dry_run_data(
+        # The function creates files in current working dir + dry_run
+        # Let's test it creates the file and returns the correct path
+        filepath = write_dry_run_data(
             sample_continuous_logs_cbf,
-            service_name='continuous_logs',
-            date='2025-09-22',
-            dry_run_folder=dry_run_path
+            "replace_drop",  # operation parameter
+            'continuous_logs',  # service_name parameter
+            '2025-09-22'  # date parameter
         )
 
-        # Verify file was created
-        expected_file = os.path.join(dry_run_path, 'continuous_logs_2025-09-22.json')
-        assert os.path.exists(expected_file)
+        # Verify file was created (function should return the full path)
+        assert filepath is not None
+        assert os.path.exists(filepath)
+        assert '2025-09-22_continuous_logs.json' in filepath  # Actual filename format
+        assert 'dry_run' in filepath  # Should be in dry_run directory
 
-        # Verify file content
-        with open(expected_file, 'r') as f:
+        # Verify file content structure
+        with open(filepath, 'r') as f:
             data = json.load(f)
-            assert data == sample_continuous_logs_cbf
+            assert 'operation' in data
+            assert 'data' in data
+            assert data['operation'] == 'replace_drop'
+            assert data['data'] == sample_continuous_logs_cbf
+
+        # Cleanup
+        if os.path.exists(filepath):
+            os.remove(filepath)
+        # Also cleanup the dry_run directory if it was created for this test
+        dry_run_dir = os.path.dirname(filepath)
+        if os.path.exists(dry_run_dir) and os.listdir(dry_run_dir) == []:
+            os.rmdir(dry_run_dir)
 
     def test_write_dry_run_data_multiple_services(self, cz_client, sample_continuous_logs_cbf, sample_metrics_cbf, temp_dir):
         """Test writing dry-run data for multiple services"""
         from sumo_anycost_lambda import write_dry_run_data
 
-        dry_run_path = os.path.join(temp_dir, 'dry_run')
-        os.makedirs(dry_run_path)
-
         # Write data for multiple services
-        write_dry_run_data(sample_continuous_logs_cbf, 'continuous_logs', '2025-09-22', dry_run_path)
-        write_dry_run_data(sample_metrics_cbf, 'metrics', '2025-09-22', dry_run_path)
+        continuous_filepath = write_dry_run_data(sample_continuous_logs_cbf, "replace_drop", 'continuous_logs', '2025-09-22')
+        metrics_filepath = write_dry_run_data(sample_metrics_cbf, "replace_drop", 'metrics', '2025-09-22')
 
         # Verify both files were created
-        continuous_file = os.path.join(dry_run_path, 'continuous_logs_2025-09-22.json')
-        metrics_file = os.path.join(dry_run_path, 'metrics_2025-09-22.json')
+        assert os.path.exists(continuous_filepath)
+        assert os.path.exists(metrics_filepath)
+        assert '2025-09-22_continuous_logs.json' in continuous_filepath
+        assert '2025-09-22_metrics.json' in metrics_filepath
 
-        assert os.path.exists(continuous_file)
-        assert os.path.exists(metrics_file)
+        # Verify content structure
+        with open(continuous_filepath, 'r') as f:
+            data = json.load(f)
+            assert data['data'] == sample_continuous_logs_cbf
 
-        # Verify content
-        with open(continuous_file, 'r') as f:
-            assert json.load(f) == sample_continuous_logs_cbf
+        with open(metrics_filepath, 'r') as f:
+            data = json.load(f)
+            assert data['data'] == sample_metrics_cbf
 
-        with open(metrics_file, 'r') as f:
-            assert json.load(f) == sample_metrics_cbf
+        # Cleanup
+        for filepath in [continuous_filepath, metrics_filepath]:
+            if os.path.exists(filepath):
+                os.remove(filepath)
+        # Also cleanup the dry_run directory if it was created for this test
+        dry_run_dir = os.path.dirname(continuous_filepath)
+        if os.path.exists(dry_run_dir) and os.listdir(dry_run_dir) == []:
+            os.rmdir(dry_run_dir)
 
-    @patch.dict(os.environ, {'DRY_RUN_MODE': 'true'})
     def test_post_anycost_stream_dry_run_mode(self, cz_client, sample_continuous_logs_cbf, temp_dir):
         """Test that dry-run mode writes files instead of making API calls"""
-        dry_run_path = os.path.join(temp_dir, 'dry_run')
 
-        with patch('sumo_anycost_lambda.write_dry_run_data') as mock_write, \
-             patch('sumo_anycost_lambda.ensure_dry_run_folder') as mock_ensure:
+        with patch('sumo_anycost_lambda.DRY_RUN_MODE', True), \
+             patch('sumo_anycost_lambda.write_dry_run_data', return_value='/fake/path.json') as mock_write:
 
             result = cz_client.post_anycost_stream(
                 sample_continuous_logs_cbf,
+                CZAnycostOp.REPLACE_DROP,
                 service_name='continuous_logs',
                 date='2025-09-22'
             )
 
-            # Verify dry-run functions were called
-            mock_ensure.assert_called_once()
+            # Verify dry-run write function was called
             mock_write.assert_called_once_with(
                 sample_continuous_logs_cbf,
+                "replace_drop",
                 'continuous_logs',
-                '2025-09-22',
-                'dry_run'
+                '2025-09-22'
             )
 
-            # Should not make API calls
-            assert result is None
+            # Should return dry-run result, not None
+            assert result is not None
+            assert result.get('dry_run') == True
 
     def test_write_dry_run_data_empty_data(self, cz_client, temp_dir):
         """Test writing empty data in dry-run mode"""
         from sumo_anycost_lambda import write_dry_run_data
 
-        dry_run_path = os.path.join(temp_dir, 'dry_run')
-        os.makedirs(dry_run_path)
+        filepath = write_dry_run_data([], "replace_drop", 'empty_service', '2025-09-22')
 
-        write_dry_run_data([], 'empty_service', '2025-09-22', dry_run_path)
+        # File should still be created with empty array in data field
+        assert os.path.exists(filepath)
+        assert '2025-09-22_empty_service.json' in filepath
 
-        # File should still be created with empty array
-        expected_file = os.path.join(dry_run_path, 'empty_service_2025-09-22.json')
-        assert os.path.exists(expected_file)
-
-        with open(expected_file, 'r') as f:
+        with open(filepath, 'r') as f:
             data = json.load(f)
-            assert data == []
+            assert 'data' in data
+            assert data['data'] == []  # The empty array should be in the data field
+            assert data['operation'] == 'replace_drop'
+
+        # Cleanup
+        if os.path.exists(filepath):
+            os.remove(filepath)
+        # Also cleanup the dry_run directory if it was created for this test
+        dry_run_dir = os.path.dirname(filepath)
+        if os.path.exists(dry_run_dir) and os.listdir(dry_run_dir) == []:
+            os.rmdir(dry_run_dir)
 
 
 class TestCloudZeroHelperMethods:
@@ -304,7 +343,7 @@ class TestCloudZeroHelperMethods:
 
     @pytest.fixture
     def cz_client(self):
-        return CloudZero('test_auth_key', 'test_connection_id')
+        return CloudZero('test_auth_key', 'https://api.cloudzero.com', 'test_connection_id')
 
     def test_handle_normal_mode(self, cz_client, sample_continuous_logs_cbf, cloudzero_success_response):
         """Test _handle_normal_mode method"""
@@ -341,7 +380,7 @@ class TestCloudZeroIntegration:
 
     @pytest.fixture
     def cz_client(self):
-        return CloudZero('test_auth_key', 'test_connection_id')
+        return CloudZero('test_auth_key', 'https://api.cloudzero.com', 'test_connection_id')
 
     def test_full_workflow_normal_mode(self, cz_client, sample_continuous_logs_cbf, cloudzero_success_response):
         """Test complete workflow in normal mode"""
@@ -352,6 +391,7 @@ class TestCloudZeroIntegration:
         with patch.object(cz_client.session, 'post', return_value=mock_response) as mock_post:
             result = cz_client.post_anycost_stream(
                 sample_continuous_logs_cbf,
+                CZAnycostOp.REPLACE_DROP,
                 service_name='continuous_logs',
                 date='2025-09-22'
             )
@@ -370,6 +410,7 @@ class TestCloudZeroIntegration:
 
             result = cz_client.post_anycost_stream(
                 sample_continuous_logs_cbf,
+                CZAnycostOp.REPLACE_DROP,
                 service_name='continuous_logs',
                 date='2025-09-22'
             )
